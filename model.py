@@ -82,6 +82,64 @@ class SelfAttentionBlock(nn.Module):
         out = self.gamma * out + x
         
         return out
+    
+class SelfAttentionBlock_GPT(nn.Module):
+    """
+    Self-Attention Block para visão computacional
+    Implementação simplificada de self-attention espacial
+    """
+    def __init__(self, channels, attn_drop=0.0):
+        """
+        Args:
+            channels: Número de canais de entrada
+            attn_drop: Dropout aplicado ao mapa de atenção
+        """
+        super(SelfAttentionBlock_GPT, self).__init__()
+        self.channels = channels
+
+        # Garante pelo menos 1 canal para Q/K
+        qk_dim = max(1, channels // 8)
+        self.qk_dim = qk_dim
+        self.scale = 1.0 / math.sqrt(qk_dim)
+
+        # Query, Key, Value
+        self.query = nn.Conv2d(channels, qk_dim, kernel_size=1, bias=False)
+        self.key   = nn.Conv2d(channels, qk_dim, kernel_size=1, bias=False)
+        self.value = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
+
+        self.attn_drop = nn.Dropout(attn_drop) if attn_drop > 0 else nn.Identity()
+
+        # Residual scaling learnable
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, x):
+        """
+        Args:
+            x: input feature maps (B, C, H, W)
+        Returns:
+            out: attention applied features (B, C, H, W)
+        """
+        B, C, H, W = x.size()
+
+        # Q: (B, H*W, qk_dim), K: (B, qk_dim, H*W), V: (B, C, H*W)
+        q = self.query(x).view(B, self.qk_dim, H * W).permute(0, 2, 1)  # (B, N, qk)
+        k = self.key(x).view(B, self.qk_dim, H * W)                     # (B, qk, N)
+        v = self.value(x).view(B, C, H * W)                              # (B, C, N)
+
+        # Attention logits com escala
+        energy = torch.bmm(q, k) * self.scale            # (B, N, N)
+        attn = self.softmax(energy)                      # (B, N, N)
+        attn = self.attn_drop(attn)
+
+        # Aplicar atenção
+        out = torch.bmm(v, attn.permute(0, 2, 1))        # (B, C, N)
+        out = out.view(B, C, H, W)
+
+        # Residual com escala learnable
+        out = self.gamma * out + x
+        return out
 
 class SelfAttentionBlock_Pytorch(nn.Module):
     """
@@ -94,7 +152,7 @@ class SelfAttentionBlock_Pytorch(nn.Module):
             channels: Número de canais de entrada
             num_heads: Número de cabeças de atenção
         """
-        super(SelfAttentionBlock, self).__init__()
+        super(SelfAttentionBlock_Pytorch, self).__init__()
         self.channels = channels
         self.num_heads = num_heads
         
@@ -147,7 +205,7 @@ class SelfAttentionBlock_Vit(nn.Module):
     Inspirado em ViT e Swin Transformer
     """
     def __init__(self, channels, num_heads=8, qkv_bias=True, attn_drop=0., proj_drop=0.):
-        super(SelfAttentionBlock, self).__init__()
+        super(SelfAttentionBlock_Vit, self).__init__()
         assert channels % num_heads == 0
         
         self.num_heads = num_heads
@@ -216,7 +274,7 @@ class SelfAttentionBlock_Timm(nn.Module):
     Biblioteca mantida pela comunidade, muito otimizada
     """
     def __init__(self, channels, num_heads=8):
-        super(SelfAttentionBlock, self).__init__()
+        super(SelfAttentionBlock_Timm, self).__init__()
         
         # Attention do timm
         self.norm = nn.LayerNorm(channels)
