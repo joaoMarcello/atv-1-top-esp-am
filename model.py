@@ -215,11 +215,11 @@ class AnyNet(nn.Module):
     """
     Arquitetura AnyNet usando blocos ResNeXt
     """
-    def __init__(self, num_classes=10, stem_channels=32, 
+    def __init__(self, num_classes=5, stem_channels=32, 
                  stage_channels=[64, 128, 256, 512],
                  stage_depths=[2, 3, 4, 3],
                  groups=32, width_per_group=4, 
-                 block_type="residual", se_reduction=16):
+                 block_type="residual", se_reduction=16, stem_kernel_size=3):
         """
         Args:
             num_classes: Número de classes para classificação
@@ -230,14 +230,24 @@ class AnyNet(nn.Module):
             width_per_group: Largura de cada grupo
             block_type: Tipo de bloco - "residual", "se_attention" ou "self_attention"
             se_reduction: Fator de redução para SE block
+            stem_kernel_size: Tamanho do kernel da convolução do stem
         """
         super(AnyNet, self).__init__()
         
-        # Stem inicial
+        # Calcular padding para manter dimensões espaciais
+        padding = stem_kernel_size // 2
+        
+        # Stem inicial com LayerNorm
+        self.stem_conv = nn.Conv2d(3, stem_channels, kernel_size=stem_kernel_size, 
+                                   stride=1, padding=padding, bias=False)
+        self.stem_norm = nn.GroupNorm(1, stem_channels)  # GroupNorm com 1 grupo = LayerNorm
+        self.stem_relu = nn.ReLU(inplace=True)
+        
+        # Criar Sequential para compatibilidade
         self.stem = nn.Sequential(
-            nn.Conv2d(3, stem_channels, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(stem_channels),
-            nn.ReLU(inplace=True)
+            self.stem_conv,
+            self.stem_norm,
+            self.stem_relu
         )
         
         # Construir stages
@@ -269,7 +279,7 @@ class AnyNet(nn.Module):
 
 
 # Funções auxiliares para criar modelos pré-configurados
-def create_anynet_small(num_classes=10, block_type="residual"):
+def create_anynet_small(num_classes=10, block_type="residual", stem_kernel_size=3):
     """Cria uma versão pequena do AnyNet"""
     return AnyNet(
         num_classes=num_classes,
@@ -278,11 +288,12 @@ def create_anynet_small(num_classes=10, block_type="residual"):
         stage_depths=[2, 2, 3, 2],
         groups=8,
         width_per_group=4,
-        block_type=block_type
+        block_type=block_type,
+        stem_kernel_size=stem_kernel_size
     )
 
 
-def create_anynet_medium(num_classes=10, block_type="residual"):
+def create_anynet_medium(num_classes=10, block_type="residual", stem_kernel_size=3):
     """Cria uma versão média do AnyNet"""
     return AnyNet(
         num_classes=num_classes,
@@ -291,11 +302,12 @@ def create_anynet_medium(num_classes=10, block_type="residual"):
         stage_depths=[2, 3, 4, 3],
         groups=32,
         width_per_group=4,
-        block_type=block_type
+        block_type=block_type,
+        stem_kernel_size=stem_kernel_size
     )
 
 
-def create_anynet_large(num_classes=10, block_type="residual"):
+def create_anynet_large(num_classes=10, block_type="residual", stem_kernel_size=3):
     """Cria uma versão grande do AnyNet"""
     return AnyNet(
         num_classes=num_classes,
@@ -304,5 +316,6 @@ def create_anynet_large(num_classes=10, block_type="residual"):
         stage_depths=[3, 4, 6, 3],
         groups=32,
         width_per_group=8,
-        block_type=block_type
+        block_type=block_type,
+        stem_kernel_size=stem_kernel_size
     )
