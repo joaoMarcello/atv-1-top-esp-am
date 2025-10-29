@@ -347,6 +347,116 @@ class CoralHead(nn.Module):
         predictions = torch.argmax(probas, dim=1)
         return predictions
 
+# ...existing code...
+
+class CoralLoss(nn.Module):
+    """
+    CORAL Loss para classificação ordinal
+    
+    Implementa a loss function do paper "Rank-consistent Ordinal Regression for Neural Networks"
+    
+    A loss é calculada como a soma das binary cross-entropies para cada threshold ordinal.
+    Para cada exemplo com label y, queremos:
+    - P(Y > k) = 1 para k < y
+    - P(Y > k) = 0 para k >= y
+    
+    Referência: https://arxiv.org/abs/1901.07884
+    """
+    def __init__(self):
+        super(CoralLoss, self).__init__()
+    
+    def forward(self, logits, targets):
+        """
+        Calcula a CORAL loss
+        
+        Args:
+            logits: Tensor (B, K-1) com logits de cada threshold
+            targets: Tensor (B,) com labels ordinais (valores de 0 a K-1)
+            
+        Returns:
+            loss: Scalar tensor com a loss média do batch
+        """
+        batch_size = logits.size(0)
+        num_classes = logits.size(1) + 1
+        
+        # Criar matriz de labels binários para cada threshold
+        # levels[i, k] = 1 se targets[i] > k, caso contrário 0
+        levels = torch.zeros_like(logits)
+        
+        for i in range(batch_size):
+            # Para label y, queremos Y > k para k = 0, 1, ..., y-1
+            # Exemplo: se y=2, então Y > 0 = True, Y > 1 = True, Y > 2 = False
+            for k in range(num_classes - 1):
+                if targets[i] > k:
+                    levels[i, k] = 1.0
+        
+        # Calcular binary cross-entropy para cada threshold
+        # BCE = -[y*log(σ(x)) + (1-y)*log(1-σ(x))]
+        loss = nn.functional.binary_cross_entropy_with_logits(
+            logits, 
+            levels,
+            reduction='mean'
+        )
+        
+        return loss
+
+
+class CoralLossV2(nn.Module):
+    """
+    Versão alternativa da CORAL Loss com importance weighting
+    
+    Permite ponderar diferentemente os erros em diferentes thresholds.
+    Útil quando alguns thresholds são mais importantes que outros.
+    """
+    def __init__(self, importance_weights=None):
+        """
+        Args:
+            importance_weights: Tensor (K-1,) com pesos para cada threshold.
+                               Se None, usa pesos uniformes.
+        """
+        super(CoralLossV2, self).__init__()
+        self.importance_weights = importance_weights
+    
+    def forward(self, logits, targets):
+        """
+        Calcula a CORAL loss com importance weighting
+        
+        Args:
+            logits: Tensor (B, K-1) com logits de cada threshold
+            targets: Tensor (B,) com labels ordinais
+            
+        Returns:
+            loss: Scalar tensor com a loss ponderada
+        """
+        batch_size = logits.size(0)
+        num_classes = logits.size(1) + 1
+        
+        # Criar matriz de labels binários
+        levels = torch.zeros_like(logits)
+        
+        for i in range(batch_size):
+            for k in range(num_classes - 1):
+                if targets[i] > k:
+                    levels[i, k] = 1.0
+        
+        # Calcular BCE para cada threshold sem redução
+        loss_per_threshold = nn.functional.binary_cross_entropy_with_logits(
+            logits, 
+            levels,
+            reduction='none'
+        )
+        
+        # Aplicar pesos de importância se fornecidos
+        if self.importance_weights is not None:
+            if self.importance_weights.device != loss_per_threshold.device:
+                self.importance_weights = self.importance_weights.to(loss_per_threshold.device)
+            loss_per_threshold = loss_per_threshold * self.importance_weights
+        
+        # Média sobre batch e thresholds
+        loss = loss_per_threshold.mean()
+        
+        return loss
+
 
 class AnyNet(nn.Module):
     """
