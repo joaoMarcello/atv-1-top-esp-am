@@ -29,7 +29,7 @@ NUM_WORKERS = 2
 SAVE_STUDY_EVERY = 2  # Salvar estudo a cada N trials
 DATA_DIR = 'C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train'
 CSV_FILE = 'data/trainLabels.csv'
-BEST_MODEL_SAVE_DIR = 'best_model_data'
+FINAL_MODEL_SAVE_DIR = 'best_model_data'
 OPTUNA_STUDY_PKL = os.path.join('best_model_data', 'optuna_study.pkl')
 
 # Setar seeds para reprodutibilidade
@@ -39,7 +39,7 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed(RANDOM_SEED)
 
 # Criar diretório para salvar melhor modelo
-os.makedirs(BEST_MODEL_SAVE_DIR, exist_ok=True)
+os.makedirs(FINAL_MODEL_SAVE_DIR, exist_ok=True)
 
 
 class EarlyStopping:
@@ -268,6 +268,7 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
     best_train_metrics = None
     best_val_metrics = None
     best_epoch = 0
+    best_model_state = None
     
     for epoch in range(n_epochs):
         if verbose:
@@ -296,13 +297,15 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
             best_train_metrics = train_metrics.copy()
             best_val_metrics = val_metrics.copy()
             best_epoch = epoch + 1
+            # Salvar estado do modelo (deep copy para evitar referências)
+            best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         
         if early_stopping.early_stop:
             if verbose:
                 print(f"Early stopping at epoch {epoch+1}")
             break
     
-    return best_val_f1, best_train_metrics, best_val_metrics, best_epoch
+    return best_val_f1, best_train_metrics, best_val_metrics, best_epoch, best_model_state
 
 
 def objective(trial, best_f1_tracker):
@@ -329,6 +332,7 @@ def objective(trial, best_f1_tracker):
     kfold = KFold(n_splits=K_FOLDS, shuffle=True, random_state=RANDOM_SEED)
     fold_losses = []
     fold_results = []  # Armazenar resultados detalhados de cada fold
+    fold_model_states = []  # Armazenar estados dos modelos de cada fold
     
     # Iterar sobre os folds
     for fold, (train_ids, val_ids) in enumerate(kfold.split(full_dataset)):
@@ -387,7 +391,7 @@ def objective(trial, best_f1_tracker):
         optimizer = optim.RMSprop(model.parameters(), lr=lr)
         
         # Treinar fold
-        fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch = train_fold(
+        fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch, fold_model_state = train_fold(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
@@ -410,6 +414,9 @@ def objective(trial, best_f1_tracker):
             'train_metrics': fold_train_metrics,
             'val_metrics': fold_val_metrics
         })
+        
+        # Armazenar estado do modelo (pesos)
+        fold_model_states.append(fold_model_state)
         
         # Limpar memória
         del model
@@ -436,7 +443,7 @@ def objective(trial, best_f1_tracker):
         
         # Salvar configuração e resultados
         import json
-        config_path = os.path.join(BEST_MODEL_SAVE_DIR, 'best_model_config.json')
+        config_path = os.path.join(FINAL_MODEL_SAVE_DIR, 'best_model_config.json')
         with open(config_path, 'w') as f:
             json.dump({
                 'trial_number': trial.number,
@@ -468,6 +475,21 @@ def objective(trial, best_f1_tracker):
         
         print(f'\n>>> Novo melhor modelo encontrado! F1: {avg_f1:.4f}')
         print(f'   Configuração salva em: {config_path}')
+        
+        # Salvar pesos dos modelos de cada fold (sobrescreve os anteriores)
+        print(f'   Salvando pesos dos {K_FOLDS} folds...')
+        for fold_idx, (fold_state, fold_result) in enumerate(zip(fold_model_states, fold_results), start=1):
+            fold_model_path = os.path.join(FINAL_MODEL_SAVE_DIR, f'best_model_{fold_idx}.pth')
+            torch.save({
+                'trial_number': trial.number,
+                'fold': fold_idx,
+                'model_state_dict': fold_state,
+                'hyperparameters': best_f1_tracker['best_params'],
+                'train_metrics': fold_result['train_metrics'],
+                'val_metrics': fold_result['val_metrics'],
+                'best_epoch': fold_result['best_epoch']
+            }, fold_model_path)
+            print(f'     ✓ Fold {fold_idx} salvo: {fold_model_path} (F1: {fold_result["val_metrics"]["f1_score"]:.4f})')
     
     return avg_f1
 
@@ -656,7 +678,7 @@ def main():
     print(f"  Salvar study a cada: {SAVE_STUDY_EVERY} trials")
     print(f"  Data directory: {DATA_DIR}")
     print(f"  CSV file: {CSV_FILE}")
-    print(f"  Best model save directory: {BEST_MODEL_SAVE_DIR}")
+    print(f"  Best model save directory: {FINAL_MODEL_SAVE_DIR}")
     print(f"  Study pickle file: {OPTUNA_STUDY_PKL}")
     
     # Verificar se os arquivos existem
@@ -750,7 +772,7 @@ def main():
     save_study(study, OPTUNA_STUDY_PKL)
     
     # Treinar modelo final com melhores hiperparâmetros
-    final_model_path = os.path.join(BEST_MODEL_SAVE_DIR, 'best_model.pth')
+    final_model_path = os.path.join(FINAL_MODEL_SAVE_DIR, 'final_model.pth')
     final_model = train_final_model(
         best_params=study.best_trial.params,
         save_path=final_model_path
@@ -762,7 +784,7 @@ def main():
     print(f"\n>>> Arquivos salvos:")
     print(f"  - Study Optuna: {OPTUNA_STUDY_PKL}")
     print(f"  - Melhor modelo: {final_model_path}")
-    print(f"  - Configuração: {os.path.join(BEST_MODEL_SAVE_DIR, 'best_model_config.json')}")
+    print(f"  - Configuração: {os.path.join(FINAL_MODEL_SAVE_DIR, 'best_model_config.json')}")
     print(f"  - Resultados: {study_results_path}")
 
 
