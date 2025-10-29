@@ -347,7 +347,6 @@ class CoralHead(nn.Module):
         predictions = torch.argmax(probas, dim=1)
         return predictions
 
-# ...existing code...
 
 class CoralLoss(nn.Module):
     """
