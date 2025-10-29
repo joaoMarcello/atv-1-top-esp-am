@@ -83,7 +83,169 @@ class SelfAttentionBlock(nn.Module):
         
         return out
 
+class SelfAttentionBlock_Pytorch(nn.Module):
+    """
+    Self-Attention Block usando MultiheadAttention do PyTorch
+    Mais eficiente e testada que a implementação manual
+    """
+    def __init__(self, channels, num_heads=8):
+        """
+        Args:
+            channels: Número de canais de entrada
+            num_heads: Número de cabeças de atenção
+        """
+        super(SelfAttentionBlock, self).__init__()
+        self.channels = channels
+        self.num_heads = num_heads
+        
+        # Garantir que channels seja divisível por num_heads
+        assert channels % num_heads == 0, f"channels ({channels}) deve ser divisível por num_heads ({num_heads})"
+        
+        # MultiheadAttention do PyTorch
+        self.attention = nn.MultiheadAttention(
+            embed_dim=channels,
+            num_heads=num_heads,
+            batch_first=False  # Formato: (seq_len, batch, embed_dim)
+        )
+        
+        # Layer normalization
+        self.norm = nn.LayerNorm(channels)
+        
+        # Learnable scaling parameter (como no original)
+        self.gamma = nn.Parameter(torch.zeros(1))
+    
+    def forward(self, x):
+        """
+        Args:
+            x: input feature maps (B, C, H, W)
+        Returns:
+            out: attention applied features (B, C, H, W)
+        """
+        B, C, H, W = x.size()
+        
+        # Reshape: (B, C, H, W) -> (H*W, B, C)
+        x_flat = x.view(B, C, H * W).permute(2, 0, 1)  # (H*W, B, C)
+        
+        # Apply layer norm
+        x_norm = self.norm(x_flat)
+        
+        # Self-attention (query=key=value)
+        attn_out, _ = self.attention(x_norm, x_norm, x_norm)  # (H*W, B, C)
+        
+        # Reshape back: (H*W, B, C) -> (B, C, H, W)
+        attn_out = attn_out.permute(1, 2, 0).view(B, C, H, W)
+        
+        # Residual connection with learnable weight
+        out = self.gamma * attn_out + x
+        
+        return out
 
+
+class SelfAttentionBlock_Vit(nn.Module):
+    """
+    Self-Attention Block estilo Vision Transformer
+    Inspirado em ViT e Swin Transformer
+    """
+    def __init__(self, channels, num_heads=8, qkv_bias=True, attn_drop=0., proj_drop=0.):
+        super(SelfAttentionBlock, self).__init__()
+        assert channels % num_heads == 0
+        
+        self.num_heads = num_heads
+        head_dim = channels // num_heads
+        self.scale = head_dim ** -0.5
+        
+        # QKV projection em uma única matrix (mais eficiente)
+        self.qkv = nn.Linear(channels, channels * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        
+        # Output projection
+        self.proj = nn.Linear(channels, channels)
+        self.proj_drop = nn.Dropout(proj_drop)
+        
+        # Layer norm
+        self.norm = nn.LayerNorm(channels)
+        
+        # Residual scaling
+        self.gamma = nn.Parameter(torch.zeros(1))
+    
+    def forward(self, x):
+        """
+        Args:
+            x: (B, C, H, W)
+        Returns:
+            out: (B, C, H, W)
+        """
+        B, C, H, W = x.shape
+        N = H * W
+        
+        # Flatten and transpose: (B, C, H, W) -> (B, N, C)
+        x_flat = x.flatten(2).transpose(1, 2)  # (B, H*W, C)
+        
+        # Layer norm
+        x_norm = self.norm(x_flat)
+        
+        # QKV projection
+        qkv = self.qkv(x_norm).reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, num_heads, N, head_dim)
+        q, k, v = qkv.unbind(0)  # Each: (B, num_heads, N, head_dim)
+        
+        # Scaled dot-product attention
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, N, N)
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+        
+        # Apply attention to values
+        x_attn = (attn @ v).transpose(1, 2).reshape(B, N, C)  # (B, N, C)
+        
+        # Output projection
+        x_attn = self.proj(x_attn)
+        x_attn = self.proj_drop(x_attn)
+        
+        # Reshape back and residual
+        x_attn = x_attn.transpose(1, 2).reshape(B, C, H, W)
+        out = self.gamma * x_attn + x
+        
+        return out
+    
+# Requer: pip install timm
+from timm.models.layers import Attention
+
+class SelfAttentionBlock_Timm(nn.Module):
+    """
+    Self-Attention Block usando implementação do timm (PyTorch Image Models)
+    Biblioteca mantida pela comunidade, muito otimizada
+    """
+    def __init__(self, channels, num_heads=8):
+        super(SelfAttentionBlock, self).__init__()
+        
+        # Attention do timm
+        self.norm = nn.LayerNorm(channels)
+        self.attn = Attention(
+            dim=channels,
+            num_heads=num_heads,
+            qkv_bias=True
+        )
+        
+        self.gamma = nn.Parameter(torch.zeros(1))
+    
+    def forward(self, x):
+        B, C, H, W = x.shape
+        
+        # Flatten: (B, C, H, W) -> (B, H*W, C)
+        x_flat = x.flatten(2).transpose(1, 2)
+        
+        # Attention with norm
+        x_norm = self.norm(x_flat)
+        x_attn = self.attn(x_norm)
+        
+        # Reshape back
+        x_attn = x_attn.transpose(1, 2).reshape(B, C, H, W)
+        
+        # Residual
+        out = self.gamma * x_attn + x
+        return out
+    
+    
 class ResnextBlock(nn.Module):
     """
     ResNeXt block com grouped convolutions.
