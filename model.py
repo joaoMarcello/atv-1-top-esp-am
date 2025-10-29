@@ -234,6 +234,120 @@ class AnyNetHead(nn.Module):
         return x
 
 
+class CoralHead(nn.Module):
+    """
+    CORAL (Consistent Rank Logits) Head para classificação ordinal
+    
+    Baseado no paper "Rank-consistent Ordinal Regression for Neural Networks"
+    Implementa um esquema de classificação ordinal onde as classes têm uma ordem natural.
+    
+    Ao invés de prever K classes independentes, CORAL usa K-1 tarefas de classificação binária
+    onde cada tarefa prevê se y > k para k = 0, 1, ..., K-2.
+    
+    Referência: https://arxiv.org/abs/1901.07884
+    """
+    def __init__(self, in_channels, num_classes):
+        """
+        Args:
+            in_channels: Número de canais de entrada (saída do último stage)
+            num_classes: Número de classes ordinais (K)
+        """
+        super(CoralHead, self).__init__()
+        
+        if num_classes < 2:
+            raise ValueError("num_classes deve ser >= 2 para CORAL")
+        
+        self.num_classes = num_classes
+        
+        # Global Average Pooling
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        # Feature extractor compartilhado
+        self.fc = nn.Linear(in_channels, in_channels // 2)
+        self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout(0.5)
+        
+        # Camada final para CORAL: K-1 neurônios de saída (um para cada threshold)
+        # Cada neurônio prevê P(Y > k) para k = 0, 1, ..., K-2
+        self.coral_fc = nn.Linear(in_channels // 2, 1, bias=False)
+        
+        # Biases independentes para cada threshold (K-1 biases)
+        # Estes são os thresholds ordinais que definem as fronteiras entre classes
+        self.coral_bias = nn.Parameter(torch.zeros(num_classes - 1))
+    
+    def forward(self, x):
+        """
+        Forward pass do CORAL Head
+        
+        Args:
+            x: Features de entrada (B, C, H, W)
+            
+        Returns:
+            logits: Tensor (B, K-1) com logits para cada threshold ordinal
+        """
+        # Global Average Pooling
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        
+        # Feature extraction compartilhada
+        x = self.fc(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        
+        # Projeção para espaço 1D compartilhado
+        logits = self.coral_fc(x)  # (B, 1)
+        
+        # Adicionar os biases independentes para cada threshold
+        # Broadcasting: (B, 1) + (K-1,) -> (B, K-1)
+        logits = logits + self.coral_bias
+        
+        return logits
+    
+    def predict_proba(self, logits):
+        """
+        Converte os logits CORAL em probabilidades para cada classe
+        
+        Args:
+            logits: Tensor (B, K-1) com logits de cada threshold
+            
+        Returns:
+            probas: Tensor (B, K) com probabilidades de cada classe
+        """
+        # Aplicar sigmoid para obter P(Y > k) para cada threshold
+        probas_gt = torch.sigmoid(logits)  # (B, K-1)
+        
+        # Calcular probabilidades cumulativas: P(Y >= k+1)
+        # probas_gt[:, k] = P(Y > k) = P(Y >= k+1)
+        
+        # P(Y = 0) = 1 - P(Y > 0)
+        proba_0 = 1 - probas_gt[:, 0:1]
+        
+        # P(Y = k) = P(Y > k-1) - P(Y > k) para k = 1, ..., K-2
+        probas_middle = probas_gt[:, :-1] - probas_gt[:, 1:]
+        
+        # P(Y = K-1) = P(Y > K-2)
+        proba_last = probas_gt[:, -1:]
+        
+        # Concatenar todas as probabilidades
+        probas = torch.cat([proba_0, probas_middle, proba_last], dim=1)
+        
+        return probas
+    
+    def predict(self, logits):
+        """
+        Prediz a classe ordinal mais provável
+        
+        Args:
+            logits: Tensor (B, K-1) com logits de cada threshold
+            
+        Returns:
+            predictions: Tensor (B,) com a classe predita para cada exemplo
+        """
+        probas = self.predict_proba(logits)
+        predictions = torch.argmax(probas, dim=1)
+        return predictions
+
+
 class AnyNet(nn.Module):
     """
     Arquitetura AnyNet usando blocos ResNeXt
@@ -242,7 +356,8 @@ class AnyNet(nn.Module):
                  stage_channels=[64, 128, 256, 512],
                  stage_depths=[2, 3, 4, 3],
                  groups=32, width_per_group=4, 
-                 block_type="residual", se_reduction=16, stem_kernel_size=3):
+                 block_type="residual", se_reduction=16, stem_kernel_size=3,
+                 head_type="normal_head"):
         """
         Args:
             num_classes: Número de classes para classificação
@@ -254,8 +369,12 @@ class AnyNet(nn.Module):
             block_type: Tipo de bloco - "residual", "se_attention" ou "self_attention"
             se_reduction: Fator de redução para SE block
             stem_kernel_size: Tamanho do kernel da convolução do stem
+            head_type: Tipo de head - "normal_head" ou "coral_head"
         """
         super(AnyNet, self).__init__()
+        
+        if head_type not in ["normal_head", "coral_head"]:
+            raise ValueError(f"head_type deve ser 'normal_head' ou 'coral_head', recebido: {head_type}")
         
         # Calcular padding para manter dimensões espaciais
         padding = stem_kernel_size // 2
@@ -284,8 +403,11 @@ class AnyNet(nn.Module):
             self.stages.append(stage)
             in_channels = out_channels
         
-        # Head (classificador)
-        self.head = AnyNetHead(stage_channels[-1], num_classes)
+        # Head (classificador) - escolher baseado no head_type
+        if head_type == "coral_head":
+            self.head = CoralHead(stage_channels[-1], num_classes)
+        else:  # normal_head
+            self.head = AnyNetHead(stage_channels[-1], num_classes)
     
     def forward(self, x):
         x = self.stem(x)
@@ -299,7 +421,7 @@ class AnyNet(nn.Module):
 
 
 # Funções auxiliares para criar modelos pré-configurados
-def create_anynet_small(num_classes=10, block_type="residual", stem_kernel_size=3):
+def create_anynet_small(num_classes=10, block_type="residual", stem_kernel_size=3, head_type="normal_head"):
     """Cria uma versão pequena do AnyNet"""
     return AnyNet(
         num_classes=num_classes,
@@ -309,11 +431,12 @@ def create_anynet_small(num_classes=10, block_type="residual", stem_kernel_size=
         groups=8,
         width_per_group=4,
         block_type=block_type,
-        stem_kernel_size=stem_kernel_size
+        stem_kernel_size=stem_kernel_size,
+        head_type=head_type
     )
 
 
-def create_anynet_medium(num_classes=10, block_type="residual", stem_kernel_size=3):
+def create_anynet_medium(num_classes=10, block_type="residual", stem_kernel_size=3, head_type="normal_head"):
     """Cria uma versão média do AnyNet"""
     return AnyNet(
         num_classes=num_classes,
@@ -323,11 +446,12 @@ def create_anynet_medium(num_classes=10, block_type="residual", stem_kernel_size
         groups=32,
         width_per_group=4,
         block_type=block_type,
-        stem_kernel_size=stem_kernel_size
+        stem_kernel_size=stem_kernel_size,
+        head_type=head_type
     )
 
 
-def create_anynet_large(num_classes=10, block_type="residual", stem_kernel_size=3):
+def create_anynet_large(num_classes=10, block_type="residual", stem_kernel_size=3, head_type="normal_head"):
     """Cria uma versão grande do AnyNet"""
     return AnyNet(
         num_classes=num_classes,
@@ -337,5 +461,6 @@ def create_anynet_large(num_classes=10, block_type="residual", stem_kernel_size=
         groups=32,
         width_per_group=8,
         block_type=block_type,
-        stem_kernel_size=stem_kernel_size
+        stem_kernel_size=stem_kernel_size,
+        head_type=head_type
     )
