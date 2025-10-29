@@ -24,7 +24,7 @@ N_EPOCHS = 50
 K_FOLDS = 3
 N_TRIALS = 50
 RANDOM_SEED = 42
-DATA_DIR = 'data/train'
+DATA_DIR = 'C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train'
 CSV_FILE = 'data/trainLabels.csv'
 BEST_MODEL_SAVE_DIR = 'best_model_data'
 
