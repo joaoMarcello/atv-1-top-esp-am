@@ -126,19 +126,34 @@ def calculate_metrics(y_true, y_pred, num_classes=5):
     avg_sensitivity = np.mean(sensitivities)
     avg_specificity = np.mean(specificities)
     
-    # F1-score (macro average)
+    # F1-score (macro average e por classe)
     f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+    f1_per_class = f1_score(y_true, y_pred, average=None, zero_division=0).tolist()
     
-    # Cohen's Kappa
+    # Acurácia geral (mantém escala 0-1 como as outras métricas)
+    accuracy = np.mean(y_true == y_pred)
+    
+    # Cohen's Kappa (geral e por classe usando matriz de confusão)
     kappa = cohen_kappa_score(y_true, y_pred)
+    
+    # Kappa por classe (calculado como kappa binário: classe i vs resto)
+    kappa_per_class = []
+    for i in range(num_classes):
+        y_true_binary = (y_true == i).astype(int)
+        y_pred_binary = (y_pred == i).astype(int)
+        kappa_class = cohen_kappa_score(y_true_binary, y_pred_binary)
+        kappa_per_class.append(kappa_class)
     
     return {
         'sensitivity': avg_sensitivity,
         'specificity': avg_specificity,
         'f1_score': f1,
         'kappa': kappa,
+        'accuracy': accuracy,
         'sensitivities_per_class': sensitivities,
-        'specificities_per_class': specificities
+        'specificities_per_class': specificities,
+        'f1_per_class': f1_per_class,
+        'kappa_per_class': kappa_per_class
     }
 
 
@@ -199,10 +214,9 @@ def train_epoch(model, dataloader, criterion, optimizer, device, head_type, num_
     
     epoch_loss = running_loss / len(dataloader)
     
-    # Calcular métricas
+    # Calcular métricas (accuracy em escala 0-1)
     metrics = calculate_metrics(np.array(all_labels), np.array(all_preds), num_classes)
     metrics['loss'] = epoch_loss
-    metrics['accuracy'] = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
     
     return metrics
 
@@ -239,10 +253,9 @@ def validate_epoch(model, dataloader, criterion, device, head_type, num_classes=
     
     epoch_loss = running_loss / len(dataloader)
     
-    # Calcular métricas
+    # Calcular métricas (accuracy em escala 0-1)
     metrics = calculate_metrics(np.array(all_labels), np.array(all_preds), num_classes)
     metrics['loss'] = epoch_loss
-    metrics['accuracy'] = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
     
     return metrics
 
@@ -269,9 +282,9 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
                                      device, head_type, num_classes)
         
         if verbose:
-            print(f'Train - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]:.2f}% | '
+            print(f'Train - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
                   f'F1: {train_metrics["f1_score"]:.4f} | Kappa: {train_metrics["kappa"]:.4f}')
-            print(f'Val   - Loss: {val_metrics["loss"]:.4f} | Acc: {val_metrics["accuracy"]:.2f}% | '
+            print(f'Val   - Loss: {val_metrics["loss"]:.4f} | Acc: {val_metrics["accuracy"]*100:.2f}% | '
                   f'F1: {val_metrics["f1_score"]:.4f} | Kappa: {val_metrics["kappa"]:.4f}')
             print(f'Val   - Sen: {val_metrics["sensitivity"]:.4f} | Spec: {val_metrics["specificity"]:.4f}')
         
@@ -558,10 +571,10 @@ def train_final_model(best_params, save_path='best_model.pth'):
             DEVICE, best_params['head_type'], NUM_CLASSES
         )
         
-        print(f'\nTrain - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]:.2f}% | '
+        print(f'\nTrain - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
               f'F1: {train_metrics["f1_score"]:.4f} | Kappa: {train_metrics["kappa"]:.4f}')
         print(f'        Sen: {train_metrics["sensitivity"]:.4f} | Spec: {train_metrics["specificity"]:.4f}')
-        print(f'\nVal   - Loss: {val_metrics["loss"]:.4f} | Acc: {val_metrics["accuracy"]:.2f}% | '
+        print(f'\nVal   - Loss: {val_metrics["loss"]:.4f} | Acc: {val_metrics["accuracy"]*100:.2f}% | '
               f'F1: {val_metrics["f1_score"]:.4f} | Kappa: {val_metrics["kappa"]:.4f}')
         print(f'        Sen: {val_metrics["sensitivity"]:.4f} | Spec: {val_metrics["specificity"]:.4f}')
         
@@ -590,7 +603,7 @@ def train_final_model(best_params, save_path='best_model.pth'):
     print(f"{'='*80}")
     print(f"\nMelhores métricas de validação:")
     print(f"  F1-score: {best_metrics['f1_score']:.4f}")
-    print(f"  Accuracy: {best_metrics['accuracy']:.2f}%")
+    print(f"  Accuracy: {best_metrics['accuracy']*100:.2f}%")
     print(f"  Kappa: {best_metrics['kappa']:.4f}")
     print(f"  Sensitivity: {best_metrics['sensitivity']:.4f}")
     print(f"  Specificity: {best_metrics['specificity']:.4f}")
