@@ -11,6 +11,7 @@ from sklearn.metrics import confusion_matrix, f1_score, cohen_kappa_score
 import os
 from tqdm import tqdm
 import warnings
+import pickle
 warnings.filterwarnings('ignore')
 
 from model import AnyNet, CoralLoss
@@ -25,9 +26,11 @@ K_FOLDS = 3
 N_TRIALS = 50
 RANDOM_SEED = 42
 NUM_WORKERS = 2
+SAVE_STUDY_EVERY = 2  # Salvar estudo a cada N trials
 DATA_DIR = 'C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train'
 CSV_FILE = 'data/trainLabels.csv'
 BEST_MODEL_SAVE_DIR = 'best_model_data'
+OPTUNA_STUDY_PKL = os.path.join('best_model_data', 'optuna_study.pkl')
 
 # Setar seeds para reprodutibilidade
 torch.manual_seed(RANDOM_SEED)
@@ -597,6 +600,34 @@ def train_final_model(best_params, save_path='best_model.pth'):
     return model
 
 
+def save_study(study, filepath):
+    """Salva o study do Optuna em pickle"""
+    try:
+        with open(filepath, 'wb') as f:
+            pickle.dump(study, f)
+        print(f'>>> Study salvo em: {filepath}')
+    except Exception as e:
+        print(f'>>> Erro ao salvar study: {e}')
+
+
+def load_study(filepath):
+    """Carrega o study do Optuna de pickle"""
+    try:
+        with open(filepath, 'rb') as f:
+            study = pickle.load(f)
+        print(f'>>> Study carregado de: {filepath}')
+        print(f'   Trials completados: {len(study.trials)}')
+        if len(study.trials) > 0:
+            print(f'   Melhor F1-score até agora: {study.best_value:.4f}')
+        return study
+    except FileNotFoundError:
+        print(f'>>> Nenhum study anterior encontrado em {filepath}')
+        return None
+    except Exception as e:
+        print(f'>>> Erro ao carregar study: {e}')
+        return None
+
+
 def main():
     """Função principal"""
     print("="*80)
@@ -609,9 +640,11 @@ def main():
     print(f"  K-Folds: {K_FOLDS}")
     print(f"  Número de trials: {N_TRIALS}")
     print(f"  Num workers: {NUM_WORKERS}")
+    print(f"  Salvar study a cada: {SAVE_STUDY_EVERY} trials")
     print(f"  Data directory: {DATA_DIR}")
     print(f"  CSV file: {CSV_FILE}")
     print(f"  Best model save directory: {BEST_MODEL_SAVE_DIR}")
+    print(f"  Study pickle file: {OPTUNA_STUDY_PKL}")
     
     # Verificar se os arquivos existem
     if not os.path.exists(DATA_DIR):
@@ -632,15 +665,43 @@ def main():
     print("INICIANDO OTIMIZAÇÃO")
     print("="*80)
     
-    study = optuna.create_study(
-        direction='maximize',  # Maximizar F1-score
-        sampler=TPESampler(seed=RANDOM_SEED),
-        study_name='anynet_optimization'
-    )
+    # Tentar carregar study anterior
+    study = load_study(OPTUNA_STUDY_PKL)
     
-    # Otimizar (passar best_f1_tracker para objective)
-    study.optimize(lambda trial: objective(trial, best_f1_tracker), 
-                   n_trials=N_TRIALS, show_progress_bar=True)
+    if study is None:
+        # Criar novo study
+        print("Criando novo study...")
+        study = optuna.create_study(
+            direction='maximize',  # Maximizar F1-score
+            sampler=TPESampler(seed=RANDOM_SEED),
+            study_name='anynet_optimization'
+        )
+    else:
+        print(f"Continuando otimização do trial {len(study.trials)}")
+    
+    # Callback para salvar study periodicamente
+    def save_study_callback(study, trial):
+        if trial.number % SAVE_STUDY_EVERY == 0 and trial.number > 0:
+            save_study(study, OPTUNA_STUDY_PKL)
+    
+    # Calcular quantos trials faltam
+    trials_completed = len(study.trials)
+    trials_remaining = max(0, N_TRIALS - trials_completed)
+    
+    if trials_remaining > 0:
+        print(f"\nExecutando {trials_remaining} trials restantes...")
+        # Otimizar (passar best_f1_tracker para objective)
+        study.optimize(
+            lambda trial: objective(trial, best_f1_tracker), 
+            n_trials=trials_remaining, 
+            show_progress_bar=True,
+            callbacks=[save_study_callback]
+        )
+        
+        # Salvar study final
+        save_study(study, OPTUNA_STUDY_PKL)
+    else:
+        print(f"\n>>> Otimização já completou {N_TRIALS} trials!")
     
     # Resultados
     print("\n" + "="*80)
@@ -671,6 +732,10 @@ def main():
     
     print(f"\nResultados salvos em: {study_results_path}")
     
+    # Salvar study final (garantir que está salvo)
+    print("\nSalvando study final...")
+    save_study(study, OPTUNA_STUDY_PKL)
+    
     # Treinar modelo final com melhores hiperparâmetros
     final_model_path = os.path.join(BEST_MODEL_SAVE_DIR, 'best_model.pth')
     final_model = train_final_model(
@@ -681,6 +746,11 @@ def main():
     print("\n" + "="*80)
     print("PROCESSO COMPLETO!")
     print("="*80)
+    print(f"\n>>> Arquivos salvos:")
+    print(f"  - Study Optuna: {OPTUNA_STUDY_PKL}")
+    print(f"  - Melhor modelo: {final_model_path}")
+    print(f"  - Configuração: {os.path.join(BEST_MODEL_SAVE_DIR, 'best_model_config.json')}")
+    print(f"  - Resultados: {study_results_path}")
 
 
 if __name__ == '__main__':
