@@ -211,6 +211,29 @@ class AnyNetStage(nn.Module):
         return self.stage(x)
 
 
+class AnyNetHead(nn.Module):
+    """
+    Head (classificador) da AnyNet
+    """
+    def __init__(self, in_channels, num_classes):
+        """
+        Args:
+            in_channels: Número de canais de entrada (saída do último stage)
+            num_classes: Número de classes para classificação
+        """
+        super(AnyNetHead, self).__init__()
+        
+        # Global Average Pooling e classificador
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(in_channels, num_classes)
+    
+    def forward(self, x):
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+
 class AnyNet(nn.Module):
     """
     Arquitetura AnyNet usando blocos ResNeXt
@@ -261,9 +284,8 @@ class AnyNet(nn.Module):
             self.stages.append(stage)
             in_channels = out_channels
         
-        # Global Average Pooling e classificador
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(stage_channels[-1], num_classes)
+        # Head (classificador)
+        self.head = AnyNetHead(stage_channels[-1], num_classes)
     
     def forward(self, x):
         x = self.stem(x)
@@ -271,9 +293,7 @@ class AnyNet(nn.Module):
         for stage in self.stages:
             x = stage(x)
         
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.fc(x)
+        x = self.head(x)
         
         return x
 
