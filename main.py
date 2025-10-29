@@ -24,6 +24,7 @@ N_EPOCHS = 50
 K_FOLDS = 3
 N_TRIALS = 50
 RANDOM_SEED = 42
+NUM_WORKERS = 2
 DATA_DIR = 'C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train'
 CSV_FILE = 'data/trainLabels.csv'
 BEST_MODEL_SAVE_DIR = 'best_model_data'
@@ -328,7 +329,7 @@ def objective(trial, best_f1_tracker):
             full_dataset,
             batch_size=batch_size,
             sampler=train_sampler,
-            num_workers=2,
+            num_workers=NUM_WORKERS,
             pin_memory=True
         )
         
@@ -343,7 +344,7 @@ def objective(trial, best_f1_tracker):
             val_dataset,
             batch_size=batch_size,
             sampler=val_sampler,
-            num_workers=2,
+            num_workers=NUM_WORKERS,
             pin_memory=True
         )
         
@@ -490,7 +491,7 @@ def train_final_model(best_params, save_path='best_model.pth'):
         train_dataset,
         batch_size=best_params['batch_size'],
         sampler=train_sampler,
-        num_workers=4,
+        num_workers=NUM_WORKERS,
         pin_memory=True
     )
     
@@ -504,7 +505,7 @@ def train_final_model(best_params, save_path='best_model.pth'):
         val_dataset,
         batch_size=best_params['batch_size'],
         sampler=val_sampler,
-        num_workers=4,
+        num_workers=NUM_WORKERS,
         pin_memory=True
     )
     
@@ -607,6 +608,7 @@ def main():
     print(f"  Épocas por trial: {N_EPOCHS}")
     print(f"  K-Folds: {K_FOLDS}")
     print(f"  Número de trials: {N_TRIALS}")
+    print(f"  Num workers: {NUM_WORKERS}")
     print(f"  Data directory: {DATA_DIR}")
     print(f"  CSV file: {CSV_FILE}")
     print(f"  Best model save directory: {BEST_MODEL_SAVE_DIR}")
