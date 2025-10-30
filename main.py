@@ -388,6 +388,8 @@ def objective(trial, best_f1_tracker, args):
     
     # Sugerir hiperparâmetros
     lr = trial.suggest_float('lr', 1e-5, 1e-2, log=True)
+    weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
+    momentum = trial.suggest_float('momentum', 0.8, 0.99)
     batch_size = trial.suggest_categorical('batch_size', [8, 16, 32])
     stem_channels = trial.suggest_categorical('stem_channels', [16, 32])
     block_type = trial.suggest_categorical('block_type', ['residual', 'se_attention', 'self_attention'])
@@ -433,8 +435,9 @@ def objective(trial, best_f1_tracker, args):
     # Iterar sobre os folds
     for fold, (train_ids, val_ids) in enumerate(kfold.split(full_dataset)):
         print(f'\nTrial {trial.number} | Fold {fold + 1}/{args.k_folds}')
-        print(f'Hyperparameters: lr={lr:.6f}, batch_size={batch_size}, '
-              f'stem_channels={stem_channels}, block_type={block_type}, head_type={head_type}')
+        print(f'Hyperparameters: lr={lr:.6f}, weight_decay={weight_decay:.6f}, momentum={momentum:.4f}')
+        print(f'             batch_size={batch_size}, stem_channels={stem_channels}')
+        print(f'             block_type={block_type}, head_type={head_type}')
         print(f'Architecture: depth_config={depth_config}, stage_depths={stage_depths}')
         
         # Criar samplers para train e validation
@@ -485,7 +488,7 @@ def objective(trial, best_f1_tracker, args):
             criterion = nn.CrossEntropyLoss()
         
         # Criar otimizador
-        optimizer = optim.RMSprop(model.parameters(), lr=lr)
+        optimizer = optim.RMSprop(model.parameters(), lr=lr, weight_decay=weight_decay, momentum=momentum)
         
         # Treinar fold
         fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch, fold_model_state, fold_history = train_fold(
@@ -534,6 +537,8 @@ def objective(trial, best_f1_tracker, args):
         best_f1_tracker['best_trial'] = trial.number
         best_f1_tracker['best_params'] = {
             'lr': lr,
+            'weight_decay': weight_decay,
+            'momentum': momentum,
             'batch_size': batch_size,
             'stem_channels': stem_channels,
             'block_type': block_type,
@@ -676,7 +681,12 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         criterion = nn.CrossEntropyLoss()
     
     # Criar otimizador
-    optimizer = optim.RMSprop(model.parameters(), lr=best_params['lr'])
+    optimizer = optim.RMSprop(
+        model.parameters(), 
+        lr=best_params['lr'],
+        weight_decay=best_params.get('weight_decay', 0.0),
+        momentum=best_params.get('momentum', 0.0)
+    )
     
     # Treinar modelo
     early_stopping = EarlyStopping(patience=15, verbose=True)  # Paciência maior no modelo final
