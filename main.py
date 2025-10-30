@@ -302,13 +302,31 @@ def validate_epoch(model, dataloader, criterion, device, head_type, num_classes=
 
 def train_fold(model, train_loader, val_loader, criterion, optimizer, device, 
                n_epochs, head_type, num_classes=5, patience=7, verbose=False):
-    """Treina um fold com early stopping baseado em F1-score"""
+    """Treina um fold com early stopping baseado em F1-score e retorna histórico completo"""
     early_stopping = EarlyStopping(patience=patience, verbose=verbose)
     best_val_f1 = 0.0
     best_train_metrics = None
     best_val_metrics = None
     best_epoch = 0
     best_model_state = None
+    
+    # Histórico completo de todas as épocas
+    history = {
+        'epochs': [],
+        'train_loss': [],
+        'train_accuracy': [],
+        'train_f1': [],
+        'train_kappa': [],
+        'train_sensitivity': [],
+        'train_specificity': [],
+        'val_loss': [],
+        'val_accuracy': [],
+        'val_f1': [],
+        'val_kappa': [],
+        'val_sensitivity': [],
+        'val_specificity': [],
+        'best_epoch': 0
+    }
     
     for epoch in range(n_epochs):
         if verbose:
@@ -321,6 +339,22 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
         # Validar
         val_metrics = validate_epoch(model, val_loader, criterion, 
                                      device, head_type, num_classes)
+        
+        # Salvar métricas no histórico
+        history['epochs'].append(epoch + 1)
+        history['train_loss'].append(train_metrics['loss'])
+        history['train_accuracy'].append(train_metrics['accuracy'])
+        history['train_f1'].append(train_metrics['f1_score'])
+        history['train_kappa'].append(train_metrics['kappa'])
+        history['train_sensitivity'].append(train_metrics['sensitivity'])
+        history['train_specificity'].append(train_metrics['specificity'])
+        
+        history['val_loss'].append(val_metrics['loss'])
+        history['val_accuracy'].append(val_metrics['accuracy'])
+        history['val_f1'].append(val_metrics['f1_score'])
+        history['val_kappa'].append(val_metrics['kappa'])
+        history['val_sensitivity'].append(val_metrics['sensitivity'])
+        history['val_specificity'].append(val_metrics['specificity'])
         
         if verbose:
             print(f'Train - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
@@ -337,6 +371,7 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
             best_train_metrics = train_metrics.copy()
             best_val_metrics = val_metrics.copy()
             best_epoch = epoch + 1
+            history['best_epoch'] = epoch + 1
             # Salvar estado do modelo (deep copy para evitar referências)
             best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         
@@ -345,7 +380,7 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
                 print(f"Early stopping at epoch {epoch+1}")
             break
     
-    return best_val_f1, best_train_metrics, best_val_metrics, best_epoch, best_model_state
+    return best_val_f1, best_train_metrics, best_val_metrics, best_epoch, best_model_state, history
 
 
 def objective(trial, best_f1_tracker, args):
@@ -373,6 +408,7 @@ def objective(trial, best_f1_tracker, args):
     fold_losses = []
     fold_results = []  # Armazenar resultados detalhados de cada fold
     fold_model_states = []  # Armazenar estados dos modelos de cada fold
+    fold_histories = []  # Armazenar históricos de treinamento de cada fold
     
     # Iterar sobre os folds
     for fold, (train_ids, val_ids) in enumerate(kfold.split(full_dataset)):
@@ -431,7 +467,7 @@ def objective(trial, best_f1_tracker, args):
         optimizer = optim.RMSprop(model.parameters(), lr=lr)
         
         # Treinar fold
-        fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch, fold_model_state = train_fold(
+        fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch, fold_model_state, fold_history = train_fold(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
@@ -457,6 +493,9 @@ def objective(trial, best_f1_tracker, args):
         
         # Armazenar estado do modelo (pesos)
         fold_model_states.append(fold_model_state)
+        
+        # Armazenar histórico de treinamento do fold
+        fold_histories.append(fold_history)
         
         # Limpar memória
         del model
@@ -529,7 +568,13 @@ def objective(trial, best_f1_tracker, args):
                 'val_metrics': fold_result['val_metrics'],
                 'best_epoch': fold_result['best_epoch']
             }, fold_model_path)
-            print(f'     ✓ Fold {fold_idx} salvo: {fold_model_path} (F1: {fold_result["val_metrics"]["f1_score"]:.4f})')
+            print(f'     >>> Fold {fold_idx} salvo: {fold_model_path} (F1: {fold_result["val_metrics"]["f1_score"]:.4f})')
+        
+        # Salvar históricos de treinamento de todos os folds
+        histories_path = os.path.join(args.save_dir, 'best_model_histories.pkl')
+        with open(histories_path, 'wb') as f:
+            pickle.dump(fold_histories, f)
+        print(f'   >>> Históricos de treinamento salvos: {histories_path}')
     
     return avg_f1
 
@@ -613,6 +658,25 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     early_stopping = EarlyStopping(patience=15, verbose=True)  # Paciência maior no modelo final
     best_val_f1 = 0.0
     best_metrics = None
+    best_epoch = 0
+    
+    # Inicializar histórico de treinamento
+    final_history = {
+        'epochs': [],
+        'train_loss': [],
+        'train_accuracy': [],
+        'train_f1': [],
+        'train_kappa': [],
+        'train_sensitivity': [],
+        'train_specificity': [],
+        'val_loss': [],
+        'val_accuracy': [],
+        'val_f1': [],
+        'val_kappa': [],
+        'val_sensitivity': [],
+        'val_specificity': [],
+        'best_epoch': 0
+    }
     
     print(f"\nIniciando treinamento do modelo final por {args.n_epochs} épocas...")
     
@@ -633,6 +697,21 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
             args.device, best_params['head_type'], args.num_classes
         )
         
+        # Adicionar métricas ao histórico
+        final_history['epochs'].append(epoch + 1)
+        final_history['train_loss'].append(train_metrics['loss'])
+        final_history['train_accuracy'].append(train_metrics['accuracy'])
+        final_history['train_f1'].append(train_metrics['f1_score'])
+        final_history['train_kappa'].append(train_metrics['kappa'])
+        final_history['train_sensitivity'].append(train_metrics['sensitivity'])
+        final_history['train_specificity'].append(train_metrics['specificity'])
+        final_history['val_loss'].append(val_metrics['loss'])
+        final_history['val_accuracy'].append(val_metrics['accuracy'])
+        final_history['val_f1'].append(val_metrics['f1_score'])
+        final_history['val_kappa'].append(val_metrics['kappa'])
+        final_history['val_sensitivity'].append(val_metrics['sensitivity'])
+        final_history['val_specificity'].append(val_metrics['specificity'])
+        
         print(f'\nTrain - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
               f'F1: {train_metrics["f1_score"]:.4f} | Kappa: {train_metrics["kappa"]:.4f}')
         print(f'        Sen: {train_metrics["sensitivity"]:.4f} | Spec: {train_metrics["specificity"]:.4f}')
@@ -644,6 +723,8 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         if val_metrics['f1_score'] > best_val_f1:
             best_val_f1 = val_metrics['f1_score']
             best_metrics = val_metrics.copy()
+            best_epoch = epoch + 1
+            final_history['best_epoch'] = best_epoch
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -652,18 +733,24 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
                 'train_metrics': train_metrics,
                 'hyperparameters': best_params
             }, save_path)
-            print(f'✓ Modelo salvo em {save_path} (F1: {best_val_f1:.4f})')
+            print(f'>>> Modelo salvo em {save_path} (F1: {best_val_f1:.4f})')
         
         # Early stopping baseado em F1-score
         early_stopping(val_metrics['f1_score'])
         if early_stopping.early_stop:
-            print(f"\n⚠ Early stopping at epoch {epoch+1}")
+            print(f"\n>>> Early stopping at epoch {epoch+1}")
             break
+    
+    # Salvar histórico de treinamento do modelo final
+    final_history_path = os.path.join(args.save_dir, 'final_model_history.pkl')
+    with open(final_history_path, 'wb') as f:
+        pickle.dump(final_history, f)
+    print(f'\n>>> Histórico do modelo final salvo: {final_history_path}')
     
     print(f"\n{'='*80}")
     print(f"TREINAMENTO FINALIZADO")
     print(f"{'='*80}")
-    print(f"\nMelhores métricas de validação:")
+    print(f"\nMelhores métricas de validação (época {best_epoch}):")
     print(f"  F1-score: {best_metrics['f1_score']:.4f}")
     print(f"  Accuracy: {best_metrics['accuracy']*100:.2f}%")
     print(f"  Kappa: {best_metrics['kappa']:.4f}")
