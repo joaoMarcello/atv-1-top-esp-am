@@ -63,6 +63,10 @@ def get_args():
                         choices=['auto', 'cuda', 'cpu'],
                         help='Device para treinamento (auto detecta CUDA)')
     
+    # Verbosidade
+    parser.add_argument('--verbose', action='store_true',
+                        help='Se ativado, mostra informações detalhadas de treinamento')
+    
     args = parser.parse_args()
     
     # Configurar device
@@ -218,14 +222,14 @@ def get_transforms(image_size=224):
     return train_transform, val_transform
 
 
-def train_epoch(model, dataloader, criterion, optimizer, device, head_type, num_classes=5):
+def train_epoch(model, dataloader, criterion, optimizer, device, head_type, num_classes=5, verbose=True):
     """Treina o modelo por uma época"""
     model.train()
     running_loss = 0.0
     all_preds = []
     all_labels = []
     
-    pbar = tqdm(dataloader, desc='Training', leave=False)
+    pbar = tqdm(dataloader, desc='Training', leave=False, disable=not verbose)
     for images, labels in pbar:
         images, labels = images.to(device), labels.to(device)
         
@@ -249,8 +253,9 @@ def train_epoch(model, dataloader, criterion, optimizer, device, head_type, num_
         running_loss += loss.item()
         
         # Atualizar barra de progresso
-        acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
-        pbar.set_postfix({'loss': loss.item(), 'acc': f'{acc:.2f}%'})
+        if verbose:
+            acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
+            pbar.set_postfix({'loss': loss.item(), 'acc': f'{acc:.2f}%'})
     
     epoch_loss = running_loss / len(dataloader)
     
@@ -261,7 +266,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, head_type, num_
     return metrics
 
 
-def validate_epoch(model, dataloader, criterion, device, head_type, num_classes=5):
+def validate_epoch(model, dataloader, criterion, device, head_type, num_classes=5, verbose=True):
     """Valida o modelo"""
     model.eval()
     running_loss = 0.0
@@ -269,7 +274,7 @@ def validate_epoch(model, dataloader, criterion, device, head_type, num_classes=
     all_labels = []
     
     with torch.no_grad():
-        pbar = tqdm(dataloader, desc='Validation', leave=False)
+        pbar = tqdm(dataloader, desc='Validation', leave=False, disable=not verbose)
         for images, labels in pbar:
             images, labels = images.to(device), labels.to(device)
             
@@ -288,8 +293,9 @@ def validate_epoch(model, dataloader, criterion, device, head_type, num_classes=
             running_loss += loss.item()
             
             # Atualizar barra de progresso
-            acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
-            pbar.set_postfix({'loss': loss.item(), 'acc': f'{acc:.2f}%'})
+            if verbose:
+                acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
+                pbar.set_postfix({'loss': loss.item(), 'acc': f'{acc:.2f}%'})
     
     epoch_loss = running_loss / len(dataloader)
     
@@ -301,9 +307,9 @@ def validate_epoch(model, dataloader, criterion, device, head_type, num_classes=
 
 
 def train_fold(model, train_loader, val_loader, criterion, optimizer, device, 
-               n_epochs, head_type, num_classes=5, patience=7, verbose=False):
+               n_epochs, head_type, num_classes=5, patience=7, verbose=False, show_epoch_details=True):
     """Treina um fold com early stopping baseado em F1-score e retorna histórico completo"""
-    early_stopping = EarlyStopping(patience=patience, verbose=verbose)
+    early_stopping = EarlyStopping(patience=patience, verbose=False)
     best_val_f1 = 0.0
     best_train_metrics = None
     best_val_metrics = None
@@ -329,16 +335,16 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
     }
     
     for epoch in range(n_epochs):
-        if verbose:
+        if show_epoch_details:
             print(f'\nEpoch {epoch+1}/{n_epochs}')
         
         # Treinar
         train_metrics = train_epoch(model, train_loader, criterion, 
-                                    optimizer, device, head_type, num_classes)
+                                    optimizer, device, head_type, num_classes, verbose=verbose)
         
         # Validar
         val_metrics = validate_epoch(model, val_loader, criterion, 
-                                     device, head_type, num_classes)
+                                     device, head_type, num_classes, verbose=verbose)
         
         # Salvar métricas no histórico
         history['epochs'].append(epoch + 1)
@@ -356,7 +362,7 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
         history['val_sensitivity'].append(val_metrics['sensitivity'])
         history['val_specificity'].append(val_metrics['specificity'])
         
-        if verbose:
+        if show_epoch_details:
             print(f'Train - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
                   f'F1: {train_metrics["f1_score"]:.4f} | Kappa: {train_metrics["kappa"]:.4f}')
             print(f'Val   - Loss: {val_metrics["loss"]:.4f} | Acc: {val_metrics["accuracy"]*100:.2f}% | '
@@ -376,7 +382,7 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
             best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         
         if early_stopping.early_stop:
-            if verbose:
+            if show_epoch_details:
                 print(f"Early stopping at epoch {epoch+1}")
             break
     
@@ -438,11 +444,17 @@ def objective(trial, best_f1_tracker, args):
     
     # Iterar sobre os folds
     for fold, (train_ids, val_ids) in enumerate(kfold.split(full_dataset)):
-        print(f'\nTrial {trial.number} | Fold {fold + 1}/{args.k_folds}')
-        print(f'Hyperparameters: lr={lr:.6f}, weight_decay={weight_decay:.6f}, momentum={momentum:.4f}')
-        print(f'             batch_size={batch_size}, stem_channels={stem_channels}')
-        print(f'             block_type={block_type}, head_type={head_type}')
-        print(f'Architecture: depth_config={depth_config}, stage_depths={stage_depths}')
+        # Sempre mostrar trial e fold atuais
+        print(f'\n{"="*80}')
+        print(f'Trial {trial.number} | Fold {fold + 1}/{args.k_folds}')
+        print(f'{"="*80}')
+        
+        # Mostrar hiperparâmetros sempre
+        print(f'Hyperparameters:')
+        print(f'  - Learning: lr={lr:.6f}, weight_decay={weight_decay:.6f}, momentum={momentum:.4f}')
+        print(f'  - Training: batch_size={batch_size}, stem_channels={stem_channels}')
+        print(f'  - Model: block_type={block_type}, head_type={head_type}')
+        print(f'  - Architecture: depth_config={depth_config}, stage_depths={stage_depths}')
         
         try:
             # Criar samplers para train e validation
@@ -507,7 +519,8 @@ def objective(trial, best_f1_tracker, args):
                 head_type=head_type,
                 num_classes=args.num_classes,
                 patience=10,  # Maior paciência para F1-score (mais volátil que loss)
-                verbose=False
+                verbose=args.verbose,
+                show_epoch_details=args.verbose
             )
             
             fold_losses.append(fold_f1)
@@ -525,6 +538,11 @@ def objective(trial, best_f1_tracker, args):
             
             # Armazenar histórico de treinamento do fold
             fold_histories.append(fold_history)
+            
+            # Mostrar resultado do fold
+            print(f'\nFold {fold + 1} concluído:')
+            print(f'  Best epoch: {fold_best_epoch}')
+            print(f'  Val F1: {fold_val_metrics["f1_score"]:.4f} | Acc: {fold_val_metrics["accuracy"]*100:.2f}% | Kappa: {fold_val_metrics["kappa"]:.4f}')
             
         except RuntimeError as e:
             if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
@@ -576,7 +594,12 @@ def objective(trial, best_f1_tracker, args):
     
     # Retornar média dos F1-scores dos folds (queremos maximizar)
     avg_f1 = np.mean(fold_losses)
-    print(f'\nTrial {trial.number} | Average F1-score: {avg_f1:.4f} (todos os {args.k_folds} folds completados)')
+    print(f'\n{"="*80}')
+    print(f'Trial {trial.number} CONCLUÍDO')
+    print(f'{"="*80}')
+    print(f'Average F1-score: {avg_f1:.4f} (todos os {args.k_folds} folds completados)')
+    print(f'F1-scores por fold: {[f"{f:.4f}" for f in fold_losses]}')
+    print(f'{"="*80}\n')
     
     # Se este é o melhor trial até agora, salvar o modelo e configurações
     if avg_f1 > best_f1_tracker['best_f1']:
@@ -628,29 +651,48 @@ def objective(trial, best_f1_tracker, args):
                 }
             }, f, indent=2)
         
-        print(f'\n>>> Novo melhor modelo encontrado! F1: {avg_f1:.4f}')
+        print(f'\n{"#"*80}')
+        print(f'### NOVO MELHOR MODELO ENCONTRADO! F1: {avg_f1:.4f} ###')
+        print(f'{"#"*80}')
         print(f'   Configuração salva em: {config_path}')
         
         # Salvar pesos dos modelos de cada fold (sobrescreve os anteriores)
-        print(f'   Salvando pesos dos {args.k_folds} folds...')
-        for fold_idx, (fold_state, fold_result) in enumerate(zip(fold_model_states, fold_results), start=1):
-            fold_model_path = os.path.join(args.save_dir, f'best_model_{fold_idx}.pth')
-            torch.save({
-                'trial_number': trial.number,
-                'fold': fold_idx,
-                'model_state_dict': fold_state,
-                'hyperparameters': best_f1_tracker['best_params'],
-                'train_metrics': fold_result['train_metrics'],
-                'val_metrics': fold_result['val_metrics'],
-                'best_epoch': fold_result['best_epoch']
-            }, fold_model_path)
-            print(f'     >>> Fold {fold_idx} salvo: {fold_model_path} (F1: {fold_result["val_metrics"]["f1_score"]:.4f})')
+        if args.verbose:
+            print(f'   Salvando pesos dos {args.k_folds} folds...')
+            for fold_idx, (fold_state, fold_result) in enumerate(zip(fold_model_states, fold_results), start=1):
+                fold_model_path = os.path.join(args.save_dir, f'best_model_{fold_idx}.pth')
+                torch.save({
+                    'trial_number': trial.number,
+                    'fold': fold_idx,
+                    'model_state_dict': fold_state,
+                    'hyperparameters': best_f1_tracker['best_params'],
+                    'train_metrics': fold_result['train_metrics'],
+                    'val_metrics': fold_result['val_metrics'],
+                    'best_epoch': fold_result['best_epoch']
+                }, fold_model_path)
+                print(f'     >>> Fold {fold_idx} salvo: {fold_model_path} (F1: {fold_result["val_metrics"]["f1_score"]:.4f})')
+        else:
+            # Salvar silenciosamente quando não verbose
+            for fold_idx, (fold_state, fold_result) in enumerate(zip(fold_model_states, fold_results), start=1):
+                fold_model_path = os.path.join(args.save_dir, f'best_model_{fold_idx}.pth')
+                torch.save({
+                    'trial_number': trial.number,
+                    'fold': fold_idx,
+                    'model_state_dict': fold_state,
+                    'hyperparameters': best_f1_tracker['best_params'],
+                    'train_metrics': fold_result['train_metrics'],
+                    'val_metrics': fold_result['val_metrics'],
+                    'best_epoch': fold_result['best_epoch']
+                }, fold_model_path)
+            print(f'   Pesos dos {args.k_folds} folds salvos em: {args.save_dir}')
         
         # Salvar históricos de treinamento de todos os folds
         histories_path = os.path.join(args.save_dir, 'best_model_histories.pkl')
         with open(histories_path, 'wb') as f:
             pickle.dump(fold_histories, f)
-        print(f'   >>> Históricos de treinamento salvos: {histories_path}')
+        if args.verbose:
+            print(f'   >>> Históricos de treinamento salvos: {histories_path}')
+        print(f'{"#"*80}\n')
     
     return avg_f1
 
@@ -892,6 +934,7 @@ def main():
     print(f"  K-Folds: {args.k_folds}")
     print(f"  Número de trials: {args.n_trials}")
     print(f"  Num workers: {args.num_workers}")
+    print(f"  Verbose: {args.verbose}")
     print(f"  Salvar study a cada: {args.save_study_every} trials")
     print(f"  Data directory: {args.data_dir}")
     print(f"  CSV file: {args.csv_file}")
