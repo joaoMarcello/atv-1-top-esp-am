@@ -384,13 +384,17 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
 
 
 def objective(trial, best_f1_tracker, args):
-    """Função objetivo para otimização com Optuna"""
+    """Função objetivo para otimização com Optuna com tratamento de OOM"""
+    
+    # Limpar cache da GPU antes de começar o trial
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     # Sugerir hiperparâmetros
     lr = trial.suggest_float('lr', 1e-5, 1e-2, log=True)
     weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
     momentum = trial.suggest_float('momentum', 0.8, 0.99)
-    batch_size = trial.suggest_categorical('batch_size', [8, 16, 32])
+    batch_size = trial.suggest_categorical('batch_size', [4, 8, 16, 24, 32])
     stem_channels = trial.suggest_categorical('stem_channels', [16, 32])
     block_type = trial.suggest_categorical('block_type', ['residual', 'se_attention', 'self_attention'])
     head_type = trial.suggest_categorical('head_type', ['normal_head', 'coral_head'])
@@ -440,96 +444,139 @@ def objective(trial, best_f1_tracker, args):
         print(f'             block_type={block_type}, head_type={head_type}')
         print(f'Architecture: depth_config={depth_config}, stage_depths={stage_depths}')
         
-        # Criar samplers para train e validation
-        train_sampler = SubsetRandomSampler(train_ids)
-        val_sampler = SubsetRandomSampler(val_ids)
+        try:
+            # Criar samplers para train e validation
+            train_sampler = SubsetRandomSampler(train_ids)
+            val_sampler = SubsetRandomSampler(val_ids)
+            
+            # Criar dataloaders
+            train_loader = DataLoader(
+                full_dataset,
+                batch_size=batch_size,
+                sampler=train_sampler,
+                num_workers=args.num_workers,
+                pin_memory=True
+            )
+            
+            # Para validação, usar transform sem augmentation
+            val_dataset = EyePacsLoader(
+                root_dir=args.data_dir,
+                csv_file=args.csv_file,
+                transform=val_transform
+            )
+            
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=batch_size,
+                sampler=val_sampler,
+                num_workers=args.num_workers,
+                pin_memory=True
+            )
+            
+            # Criar modelo
+            model = AnyNet(
+                num_classes=args.num_classes,
+                stem_channels=stem_channels,
+                stage_channels=[64, 128, 256, 512],
+                stage_depths=stage_depths,
+                groups=8,
+                width_per_group=4,
+                block_type=block_type,
+                head_type=head_type,
+                stem_kernel_size=3
+            ).to(args.device)
+            
+            # Escolher loss apropriada baseada no head_type
+            if head_type == "coral_head":
+                criterion = CoralLoss()
+            else:
+                criterion = nn.CrossEntropyLoss()
+            
+            # Criar otimizador
+            optimizer = optim.RMSprop(model.parameters(), lr=lr, weight_decay=weight_decay, momentum=momentum)
+            
+            # Treinar fold
+            fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch, fold_model_state, fold_history = train_fold(
+                model=model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                criterion=criterion,
+                optimizer=optimizer,
+                device=args.device,
+                n_epochs=args.n_epochs,
+                head_type=head_type,
+                num_classes=args.num_classes,
+                patience=10,  # Maior paciência para F1-score (mais volátil que loss)
+                verbose=False
+            )
+            
+            fold_losses.append(fold_f1)
+            
+            # Armazenar resultados do fold
+            fold_results.append({
+                'fold': fold + 1,
+                'best_epoch': fold_best_epoch,
+                'train_metrics': fold_train_metrics,
+                'val_metrics': fold_val_metrics
+            })
+            
+            # Armazenar estado do modelo (pesos)
+            fold_model_states.append(fold_model_state)
+            
+            # Armazenar histórico de treinamento do fold
+            fold_histories.append(fold_history)
+            
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
+                print(f'\n!!! ERRO: GPU Out of Memory no Fold {fold + 1} !!!')
+                print(f'    Configuração problemática:')
+                print(f'      - batch_size: {batch_size}')
+                print(f'      - block_type: {block_type}')
+                print(f'      - depth_config: {depth_config}')
+                print(f'      - stem_channels: {stem_channels}')
+                print(f'    Mensagem: {str(e)[:200]}...')
+                
+                # Limpar memória
+                if 'model' in locals():
+                    del model
+                if 'optimizer' in locals():
+                    del optimizer
+                if 'criterion' in locals():
+                    del criterion
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                # Prunear este trial (combinação de hiperparâmetros inviável)
+                raise optuna.exceptions.TrialPruned(
+                    f"GPU OOM error on fold {fold + 1}. Configuration exceeds GPU memory capacity."
+                )
+            else:
+                # Re-raise para outros tipos de erro
+                print(f'\n!!! ERRO NÃO ESPERADO no Fold {fold + 1}: {str(e)}')
+                raise
         
-        # Criar dataloaders
-        train_loader = DataLoader(
-            full_dataset,
-            batch_size=batch_size,
-            sampler=train_sampler,
-            num_workers=args.num_workers,
-            pin_memory=True
+        finally:
+            # Garantir limpeza de memória mesmo em caso de erro
+            if 'model' in locals():
+                del model
+            if 'optimizer' in locals():
+                del optimizer
+            if 'criterion' in locals():
+                del criterion
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    
+    # Verificar se conseguimos completar todos os folds
+    if len(fold_losses) < args.k_folds:
+        print(f'\n!!! AVISO: Trial {trial.number} completou apenas {len(fold_losses)}/{args.k_folds} folds')
+        print(f'    Trial será marcado como incompleto')
+        raise optuna.exceptions.TrialPruned(
+            f"Only {len(fold_losses)}/{args.k_folds} folds completed due to errors."
         )
-        
-        # Para validação, usar transform sem augmentation
-        val_dataset = EyePacsLoader(
-            root_dir=args.data_dir,
-            csv_file=args.csv_file,
-            transform=val_transform
-        )
-        
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
-            sampler=val_sampler,
-            num_workers=args.num_workers,
-            pin_memory=True
-        )
-        
-        # Criar modelo
-        model = AnyNet(
-            num_classes=args.num_classes,
-            stem_channels=stem_channels,
-            stage_channels=[64, 128, 256, 512],
-            stage_depths=stage_depths,
-            groups=8,
-            width_per_group=4,
-            block_type=block_type,
-            head_type=head_type,
-            stem_kernel_size=3
-        ).to(args.device)
-        
-        # Escolher loss apropriada baseada no head_type
-        if head_type == "coral_head":
-            criterion = CoralLoss()
-        else:
-            criterion = nn.CrossEntropyLoss()
-        
-        # Criar otimizador
-        optimizer = optim.RMSprop(model.parameters(), lr=lr, weight_decay=weight_decay, momentum=momentum)
-        
-        # Treinar fold
-        fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch, fold_model_state, fold_history = train_fold(
-            model=model,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            device=args.device,
-            n_epochs=args.n_epochs,
-            head_type=head_type,
-            num_classes=args.num_classes,
-            patience=10,  # Maior paciência para F1-score (mais volátil que loss)
-            verbose=False
-        )
-        
-        fold_losses.append(fold_f1)
-        
-        # Armazenar resultados do fold
-        fold_results.append({
-            'fold': fold + 1,
-            'best_epoch': fold_best_epoch,
-            'train_metrics': fold_train_metrics,
-            'val_metrics': fold_val_metrics
-        })
-        
-        # Armazenar estado do modelo (pesos)
-        fold_model_states.append(fold_model_state)
-        
-        # Armazenar histórico de treinamento do fold
-        fold_histories.append(fold_history)
-        
-        # Limpar memória
-        del model
-        del optimizer
-        del criterion
-        torch.cuda.empty_cache()
     
     # Retornar média dos F1-scores dos folds (queremos maximizar)
     avg_f1 = np.mean(fold_losses)
-    print(f'\nTrial {trial.number} | Average F1-score: {avg_f1:.4f}')
+    print(f'\nTrial {trial.number} | Average F1-score: {avg_f1:.4f} (todos os {args.k_folds} folds completados)')
     
     # Se este é o melhor trial até agora, salvar o modelo e configurações
     if avg_f1 > best_f1_tracker['best_f1']:
