@@ -88,7 +88,7 @@ class SelfAttentionBlock_GPT(nn.Module):
     Self-Attention Block para visão computacional
     Implementação simplificada de self-attention espacial
     """
-    def __init__(self, channels, attn_drop=0.0):
+    def __init__(self, channels, attn_drop=0.2):
         """
         Args:
             channels: Número de canais de entrada
@@ -357,7 +357,7 @@ class ResnextBlock(nn.Module):
         if self.block_type == "se_attention":
             self.attention = SEBlock(out_channels, reduction=se_reduction)
         elif self.block_type == "self_attention":
-            self.attention = SelfAttentionBlock(out_channels)
+            self.attention = SelfAttentionBlock_GPT(out_channels)
         else:  # residual
             self.attention = None
     
