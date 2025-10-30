@@ -12,34 +12,74 @@ import os
 from tqdm import tqdm
 import warnings
 import pickle
+import argparse
 warnings.filterwarnings('ignore')
 
 from model import AnyNet, CoralLoss
 from dataset import EyePacsLoader
 
 
-# Configurações globais
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-NUM_CLASSES = 5
-N_EPOCHS = 50
-K_FOLDS = 3
-N_TRIALS = 50
-RANDOM_SEED = 42
-NUM_WORKERS = 2
-SAVE_STUDY_EVERY = 2  # Salvar estudo a cada N trials
-DATA_DIR = 'C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train'
-CSV_FILE = 'data/trainLabels.csv'
-FINAL_MODEL_SAVE_DIR = 'best_model_data'
-OPTUNA_STUDY_PKL = os.path.join('best_model_data', 'optuna_study.pkl')
+def get_args():
+    """
+    Configura e processa argumentos de linha de comando
+    
+    Returns:
+        argparse.Namespace: Objeto contendo todos os argumentos configurados
+    """
+    parser = argparse.ArgumentParser(
+        description='Treinamento de AnyNet para Classificação de Retinopatia Diabética',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    # Configurações de treinamento
+    parser.add_argument('--n_epochs', type=int, default=50,
+                        help='Número de épocas por trial')
+    parser.add_argument('--k_folds', type=int, default=3,
+                        help='Número de folds para validação cruzada')
+    parser.add_argument('--n_trials', type=int, default=50,
+                        help='Número de trials para otimização Optuna')
+    parser.add_argument('--random_seed', type=int, default=42,
+                        help='Seed para reprodutibilidade')
+    parser.add_argument('--num_workers', type=int, default=2,
+                        help='Número de workers para DataLoader')
+    parser.add_argument('--save_study_every', type=int, default=2,
+                        help='Salvar study do Optuna a cada N trials')
+    
+    # Caminhos de dados
+    parser.add_argument('--data_dir', type=str,
+                        default='C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train',
+                        help='Diretório contendo as imagens de treinamento')
+    parser.add_argument('--csv_file', type=str, default='data/trainLabels.csv',
+                        help='Arquivo CSV com os labels')
+    parser.add_argument('--save_dir', type=str, default='best_model_data',
+                        help='Diretório para salvar modelos e resultados')
+    
+    # Configurações do modelo
+    parser.add_argument('--num_classes', type=int, default=5,
+                        help='Número de classes para classificação')
+    
+    # Device
+    parser.add_argument('--device', type=str, default='auto',
+                        choices=['auto', 'cuda', 'cpu'],
+                        help='Device para treinamento (auto detecta CUDA)')
+    
+    args = parser.parse_args()
+    
+    # Configurar device
+    if args.device == 'auto':
+        args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        args.device = torch.device(args.device)
+    
+    # Criar diretório de salvamento se não existir
+    os.makedirs(args.save_dir, exist_ok=True)
+    
+    # Configurar path do pickle do Optuna
+    args.optuna_study_pkl = os.path.join(args.save_dir, 'optuna_study.pkl')
+    
+    return args
 
-# Setar seeds para reprodutibilidade
-torch.manual_seed(RANDOM_SEED)
-np.random.seed(RANDOM_SEED)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(RANDOM_SEED)
 
-# Criar diretório para salvar melhor modelo
-os.makedirs(FINAL_MODEL_SAVE_DIR, exist_ok=True)
 
 
 class EarlyStopping:
@@ -308,7 +348,7 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
     return best_val_f1, best_train_metrics, best_val_metrics, best_epoch, best_model_state
 
 
-def objective(trial, best_f1_tracker):
+def objective(trial, best_f1_tracker, args):
     """Função objetivo para otimização com Optuna"""
     
     # Sugerir hiperparâmetros
@@ -323,20 +363,20 @@ def objective(trial, best_f1_tracker):
     
     # Criar dataset completo
     full_dataset = EyePacsLoader(
-        root_dir=DATA_DIR,
-        csv_file=CSV_FILE,
+        root_dir=args.data_dir,
+        csv_file=args.csv_file,
         transform=train_transform
     )
     
     # Configurar K-Fold Cross Validation
-    kfold = KFold(n_splits=K_FOLDS, shuffle=True, random_state=RANDOM_SEED)
+    kfold = KFold(n_splits=args.k_folds, shuffle=True, random_state=args.random_seed)
     fold_losses = []
     fold_results = []  # Armazenar resultados detalhados de cada fold
     fold_model_states = []  # Armazenar estados dos modelos de cada fold
     
     # Iterar sobre os folds
     for fold, (train_ids, val_ids) in enumerate(kfold.split(full_dataset)):
-        print(f'\nTrial {trial.number} | Fold {fold + 1}/{K_FOLDS}')
+        print(f'\nTrial {trial.number} | Fold {fold + 1}/{args.k_folds}')
         print(f'Hyperparameters: lr={lr:.6f}, batch_size={batch_size}, '
               f'stem_channels={stem_channels}, block_type={block_type}, head_type={head_type}')
         
@@ -349,14 +389,14 @@ def objective(trial, best_f1_tracker):
             full_dataset,
             batch_size=batch_size,
             sampler=train_sampler,
-            num_workers=NUM_WORKERS,
+            num_workers=args.num_workers,
             pin_memory=True
         )
         
         # Para validação, usar transform sem augmentation
         val_dataset = EyePacsLoader(
-            root_dir=DATA_DIR,
-            csv_file=CSV_FILE,
+            root_dir=args.data_dir,
+            csv_file=args.csv_file,
             transform=val_transform
         )
         
@@ -364,13 +404,13 @@ def objective(trial, best_f1_tracker):
             val_dataset,
             batch_size=batch_size,
             sampler=val_sampler,
-            num_workers=NUM_WORKERS,
+            num_workers=args.num_workers,
             pin_memory=True
         )
         
         # Criar modelo
         model = AnyNet(
-            num_classes=NUM_CLASSES,
+            num_classes=args.num_classes,
             stem_channels=stem_channels,
             stage_channels=[64, 128, 256, 512],
             stage_depths=[2, 2, 3, 2],
@@ -379,7 +419,7 @@ def objective(trial, best_f1_tracker):
             block_type=block_type,
             head_type=head_type,
             stem_kernel_size=3
-        ).to(DEVICE)
+        ).to(args.device)
         
         # Escolher loss apropriada baseada no head_type
         if head_type == "coral_head":
@@ -397,10 +437,10 @@ def objective(trial, best_f1_tracker):
             val_loader=val_loader,
             criterion=criterion,
             optimizer=optimizer,
-            device=DEVICE,
-            n_epochs=N_EPOCHS,
+            device=args.device,
+            n_epochs=args.n_epochs,
             head_type=head_type,
-            num_classes=NUM_CLASSES,
+            num_classes=args.num_classes,
             patience=10,  # Maior paciência para F1-score (mais volátil que loss)
             verbose=False
         )
@@ -443,7 +483,7 @@ def objective(trial, best_f1_tracker):
         
         # Salvar configuração e resultados
         import json
-        config_path = os.path.join(FINAL_MODEL_SAVE_DIR, 'best_model_config.json')
+        config_path = os.path.join(args.save_dir, 'best_model_config.json')
         with open(config_path, 'w') as f:
             json.dump({
                 'trial_number': trial.number,
@@ -461,7 +501,7 @@ def objective(trial, best_f1_tracker):
                     for fr in fold_results
                 ],
                 'model_architecture': {
-                    'num_classes': NUM_CLASSES,
+                    'num_classes': args.num_classes,
                     'stem_channels': stem_channels,
                     'stage_channels': [64, 128, 256, 512],
                     'stage_depths': [2, 2, 3, 2],
@@ -477,9 +517,9 @@ def objective(trial, best_f1_tracker):
         print(f'   Configuração salva em: {config_path}')
         
         # Salvar pesos dos modelos de cada fold (sobrescreve os anteriores)
-        print(f'   Salvando pesos dos {K_FOLDS} folds...')
+        print(f'   Salvando pesos dos {args.k_folds} folds...')
         for fold_idx, (fold_state, fold_result) in enumerate(zip(fold_model_states, fold_results), start=1):
-            fold_model_path = os.path.join(FINAL_MODEL_SAVE_DIR, f'best_model_{fold_idx}.pth')
+            fold_model_path = os.path.join(args.save_dir, f'best_model_{fold_idx}.pth')
             torch.save({
                 'trial_number': trial.number,
                 'fold': fold_idx,
@@ -494,7 +534,7 @@ def objective(trial, best_f1_tracker):
     return avg_f1
 
 
-def train_final_model(best_params, save_path='best_model.pth'):
+def train_final_model(best_params, args, save_path='best_model.pth'):
     """Treina o modelo final com os melhores hiperparâmetros"""
     print("\n" + "="*80)
     print("TREINANDO MODELO FINAL COM MELHORES HIPERPARÂMETROS")
@@ -508,8 +548,8 @@ def train_final_model(best_params, save_path='best_model.pth'):
     
     # Criar datasets
     train_dataset = EyePacsLoader(
-        root_dir=DATA_DIR,
-        csv_file=CSV_FILE,
+        root_dir=args.data_dir,
+        csv_file=args.csv_file,
         transform=train_transform
     )
     
@@ -529,13 +569,13 @@ def train_final_model(best_params, save_path='best_model.pth'):
         train_dataset,
         batch_size=best_params['batch_size'],
         sampler=train_sampler,
-        num_workers=NUM_WORKERS,
+        num_workers=args.num_workers,
         pin_memory=True
     )
     
     val_dataset = EyePacsLoader(
-        root_dir=DATA_DIR,
-        csv_file=CSV_FILE,
+        root_dir=args.data_dir,
+        csv_file=args.csv_file,
         transform=val_transform
     )
     
@@ -543,13 +583,13 @@ def train_final_model(best_params, save_path='best_model.pth'):
         val_dataset,
         batch_size=best_params['batch_size'],
         sampler=val_sampler,
-        num_workers=NUM_WORKERS,
+        num_workers=args.num_workers,
         pin_memory=True
     )
     
     # Criar modelo
     model = AnyNet(
-        num_classes=NUM_CLASSES,
+        num_classes=args.num_classes,
         stem_channels=best_params['stem_channels'],
         stage_channels=[64, 128, 256, 512],
         stage_depths=[2, 2, 3, 2],
@@ -558,7 +598,7 @@ def train_final_model(best_params, save_path='best_model.pth'):
         block_type=best_params['block_type'],
         head_type=best_params['head_type'],
         stem_kernel_size=3
-    ).to(DEVICE)
+    ).to(args.device)
     
     # Escolher loss apropriada
     if best_params['head_type'] == "coral_head":
@@ -574,23 +614,23 @@ def train_final_model(best_params, save_path='best_model.pth'):
     best_val_f1 = 0.0
     best_metrics = None
     
-    print(f"\nIniciando treinamento do modelo final por {N_EPOCHS} épocas...")
+    print(f"\nIniciando treinamento do modelo final por {args.n_epochs} épocas...")
     
-    for epoch in range(N_EPOCHS):
+    for epoch in range(args.n_epochs):
         print(f'\n{"="*80}')
-        print(f'Epoch {epoch+1}/{N_EPOCHS}')
+        print(f'Epoch {epoch+1}/{args.n_epochs}')
         print(f'{"="*80}')
         
         # Treinar
         train_metrics = train_epoch(
             model, train_loader, criterion, optimizer, 
-            DEVICE, best_params['head_type'], NUM_CLASSES
+            args.device, best_params['head_type'], args.num_classes
         )
         
         # Validar
         val_metrics = validate_epoch(
             model, val_loader, criterion, 
-            DEVICE, best_params['head_type'], NUM_CLASSES
+            args.device, best_params['head_type'], args.num_classes
         )
         
         print(f'\nTrain - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
@@ -665,27 +705,36 @@ def load_study(filepath):
 
 def main():
     """Função principal"""
+    # Processar argumentos de linha de comando
+    args = get_args()
+    
+    # Setar seeds para reprodutibilidade
+    torch.manual_seed(args.random_seed)
+    np.random.seed(args.random_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.random_seed)
+    
     print("="*80)
     print("OTIMIZAÇÃO DE HIPERPARÂMETROS COM OPTUNA")
     print("="*80)
     print(f"\nConfiguração:")
-    print(f"  Device: {DEVICE}")
-    print(f"  Número de classes: {NUM_CLASSES}")
-    print(f"  Épocas por trial: {N_EPOCHS}")
-    print(f"  K-Folds: {K_FOLDS}")
-    print(f"  Número de trials: {N_TRIALS}")
-    print(f"  Num workers: {NUM_WORKERS}")
-    print(f"  Salvar study a cada: {SAVE_STUDY_EVERY} trials")
-    print(f"  Data directory: {DATA_DIR}")
-    print(f"  CSV file: {CSV_FILE}")
-    print(f"  Best model save directory: {FINAL_MODEL_SAVE_DIR}")
-    print(f"  Study pickle file: {OPTUNA_STUDY_PKL}")
+    print(f"  Device: {args.device}")
+    print(f"  Número de classes: {args.num_classes}")
+    print(f"  Épocas por trial: {args.n_epochs}")
+    print(f"  K-Folds: {args.k_folds}")
+    print(f"  Número de trials: {args.n_trials}")
+    print(f"  Num workers: {args.num_workers}")
+    print(f"  Salvar study a cada: {args.save_study_every} trials")
+    print(f"  Data directory: {args.data_dir}")
+    print(f"  CSV file: {args.csv_file}")
+    print(f"  Best model save directory: {args.save_dir}")
+    print(f"  Study pickle file: {args.optuna_study_pkl}")
     
     # Verificar se os arquivos existem
-    if not os.path.exists(DATA_DIR):
-        raise FileNotFoundError(f"Diretório de dados não encontrado: {DATA_DIR}")
-    if not os.path.exists(CSV_FILE):
-        raise FileNotFoundError(f"Arquivo CSV não encontrado: {CSV_FILE}")
+    if not os.path.exists(args.data_dir):
+        raise FileNotFoundError(f"Diretório de dados não encontrado: {args.data_dir}")
+    if not os.path.exists(args.csv_file):
+        raise FileNotFoundError(f"Arquivo CSV não encontrado: {args.csv_file}")
     
     # Tracker para melhor F1-score
     best_f1_tracker = {
@@ -701,14 +750,14 @@ def main():
     print("="*80)
     
     # Tentar carregar study anterior
-    study = load_study(OPTUNA_STUDY_PKL)
+    study = load_study(args.optuna_study_pkl)
     
     if study is None:
         # Criar novo study
         print("Criando novo study...")
         study = optuna.create_study(
             direction='maximize',  # Maximizar F1-score
-            sampler=TPESampler(seed=RANDOM_SEED),
+            sampler=TPESampler(seed=args.random_seed),
             study_name='anynet_optimization'
         )
     else:
@@ -716,27 +765,27 @@ def main():
     
     # Callback para salvar study periodicamente
     def save_study_callback(study, trial):
-        if trial.number % SAVE_STUDY_EVERY == 0 and trial.number > 0:
-            save_study(study, OPTUNA_STUDY_PKL)
+        if trial.number % args.save_study_every == 0 and trial.number > 0:
+            save_study(study, args.optuna_study_pkl)
     
     # Calcular quantos trials faltam
     trials_completed = len(study.trials)
-    trials_remaining = max(0, N_TRIALS - trials_completed)
+    trials_remaining = max(0, args.n_trials - trials_completed)
     
     if trials_remaining > 0:
         print(f"\nExecutando {trials_remaining} trials restantes...")
-        # Otimizar (passar best_f1_tracker para objective)
+        # Otimizar (passar best_f1_tracker e args para objective)
         study.optimize(
-            lambda trial: objective(trial, best_f1_tracker), 
+            lambda trial: objective(trial, best_f1_tracker, args), 
             n_trials=trials_remaining, 
             show_progress_bar=True,
             callbacks=[save_study_callback]
         )
         
         # Salvar study final
-        save_study(study, OPTUNA_STUDY_PKL)
+        save_study(study, args.optuna_study_pkl)
     else:
-        print(f"\n>>> Otimização já completou {N_TRIALS} trials!")
+        print(f"\n>>> Otimização já completou {args.n_trials} trials!")
     
     # Resultados
     print("\n" + "="*80)
@@ -769,12 +818,13 @@ def main():
     
     # Salvar study final (garantir que está salvo)
     print("\nSalvando study final...")
-    save_study(study, OPTUNA_STUDY_PKL)
+    save_study(study, args.optuna_study_pkl)
     
     # Treinar modelo final com melhores hiperparâmetros
-    final_model_path = os.path.join(FINAL_MODEL_SAVE_DIR, 'final_model.pth')
+    final_model_path = os.path.join(args.save_dir, 'final_model.pth')
     final_model = train_final_model(
         best_params=study.best_trial.params,
+        args=args,
         save_path=final_model_path
     )
     
@@ -782,9 +832,9 @@ def main():
     print("PROCESSO COMPLETO!")
     print("="*80)
     print(f"\n>>> Arquivos salvos:")
-    print(f"  - Study Optuna: {OPTUNA_STUDY_PKL}")
+    print(f"  - Study Optuna: {args.optuna_study_pkl}")
     print(f"  - Melhor modelo: {final_model_path}")
-    print(f"  - Configuração: {os.path.join(FINAL_MODEL_SAVE_DIR, 'best_model_config.json')}")
+    print(f"  - Configuração: {os.path.join(args.save_dir, 'best_model_config.json')}")
     print(f"  - Resultados: {study_results_path}")
 
 
