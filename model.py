@@ -85,22 +85,32 @@ class SelfAttentionBlock(nn.Module):
     
 class SelfAttentionBlock_GPT(nn.Module):
     """
-    Self-Attention Block para visão computacional
-    Implementação simplificada de self-attention espacial
+    Self-Attention Block para visão computacional com eficiência de memória
+    Implementação com downsampling para reduzir uso de memória GPU
     """
-    def __init__(self, channels, attn_drop=0.2):
+    def __init__(self, channels, attn_drop=0.2, downsample_ratio=4):
         """
         Args:
             channels: Número de canais de entrada
             attn_drop: Dropout aplicado ao mapa de atenção
+            downsample_ratio: Fator de redução espacial (4 = reduz H,W por 4x)
         """
         super(SelfAttentionBlock_GPT, self).__init__()
         self.channels = channels
+        self.downsample_ratio = downsample_ratio
 
         # Garante pelo menos 1 canal para Q/K
         qk_dim = max(1, channels // 8)
         self.qk_dim = qk_dim
         self.scale = 1.0 / math.sqrt(qk_dim)
+
+        # Downsampling para reduzir memória (usa avgpool para manter informação)
+        if downsample_ratio > 1:
+            self.downsample = nn.AvgPool2d(kernel_size=downsample_ratio, stride=downsample_ratio)
+            self.upsample = nn.Upsample(scale_factor=downsample_ratio, mode='bilinear', align_corners=False)
+        else:
+            self.downsample = nn.Identity()
+            self.upsample = nn.Identity()
 
         # Query, Key, Value
         self.query = nn.Conv2d(channels, qk_dim, kernel_size=1, bias=False)
@@ -123,19 +133,27 @@ class SelfAttentionBlock_GPT(nn.Module):
         """
         B, C, H, W = x.size()
 
-        # Q: (B, H*W, qk_dim), K: (B, qk_dim, H*W), V: (B, C, H*W)
-        q = self.query(x).view(B, self.qk_dim, H * W).permute(0, 2, 1)  # (B, N, qk)
-        k = self.key(x).view(B, self.qk_dim, H * W)                     # (B, qk, N)
-        v = self.value(x).view(B, C, H * W)                              # (B, C, N)
+        # Downsample para reduzir memória (ex: 224x224 -> 56x56 com ratio=4)
+        x_down = self.downsample(x)
+        _, _, H_down, W_down = x_down.size()
+        N_down = H_down * W_down
 
-        # Attention logits com escala
-        energy = torch.bmm(q, k) * self.scale            # (B, N, N)
+        # Q: (B, N, qk_dim), K: (B, qk_dim, N), V: (B, C, N)
+        q = self.query(x_down).view(B, self.qk_dim, N_down).permute(0, 2, 1)  # (B, N, qk)
+        k = self.key(x_down).view(B, self.qk_dim, N_down)                     # (B, qk, N)
+        v = self.value(x_down).view(B, C, N_down)                             # (B, C, N)
+
+        # Attention logits com escala (agora N é muito menor!)
+        energy = torch.bmm(q, k) * self.scale            # (B, N, N) - memória reduzida
         attn = self.softmax(energy)                      # (B, N, N)
         attn = self.attn_drop(attn)
 
         # Aplicar atenção
         out = torch.bmm(v, attn.permute(0, 2, 1))        # (B, C, N)
-        out = out.view(B, C, H, W)
+        out = out.view(B, C, H_down, W_down)
+
+        # Upsample de volta ao tamanho original
+        out = self.upsample(out)
 
         # Residual com escala learnable
         out = self.gamma * out + x
@@ -266,15 +284,35 @@ class SelfAttentionBlock_Vit(nn.Module):
         return out
     
 # Requer: pip install timm
-from timm.models.layers import Attention
+try:
+    from timm.layers import Attention
+    TIMM_AVAILABLE = True
+except ImportError:
+    try:
+        from timm.models.layers import Attention
+        TIMM_AVAILABLE = True
+    except ImportError:
+        TIMM_AVAILABLE = False
+        # Criar classe dummy para não quebrar o código
+        class Attention:
+            pass
 
 class SelfAttentionBlock_Timm(nn.Module):
     """
     Self-Attention Block usando implementação do timm (PyTorch Image Models)
     Biblioteca mantida pela comunidade, muito otimizada
+    
+    NOTA: Requer 'pip install timm'
     """
     def __init__(self, channels, num_heads=8):
         super(SelfAttentionBlock_Timm, self).__init__()
+        
+        if not TIMM_AVAILABLE:
+            raise ImportError(
+                "timm não está disponível. Instale com: pip install timm\n"
+                "Ou use SelfAttentionBlock, SelfAttentionBlock_GPT, "
+                "SelfAttentionBlock_Pytorch ou SelfAttentionBlock_Vit"
+            )
         
         # Attention do timm
         self.norm = nn.LayerNorm(channels)
