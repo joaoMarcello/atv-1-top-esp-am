@@ -393,6 +393,26 @@ def objective(trial, best_f1_tracker, args):
     block_type = trial.suggest_categorical('block_type', ['residual', 'se_attention', 'self_attention'])
     head_type = trial.suggest_categorical('head_type', ['normal_head', 'coral_head'])
     
+    # Otimizar profundidade da rede (stage_depths)
+    depth_config = trial.suggest_categorical('depth_config', [
+        'shallow',      # Redes rasas, mais rápidas
+        'balanced',     # Configuração padrão
+        'deep',         # Redes profundas
+        'very_deep',    # Muito profundas
+        'front_heavy',  # Mais blocos nos primeiros stages
+        'back_heavy'    # Mais blocos nos últimos stages
+    ])
+    
+    depth_configs = {
+        'shallow':     [1, 2, 2, 1],   # Total: 6 blocos
+        'balanced':    [2, 2, 3, 2],   # Total: 9 blocos (padrão atual)
+        'deep':        [2, 3, 4, 3],   # Total: 12 blocos
+        'very_deep':   [3, 4, 6, 3],   # Total: 16 blocos
+        'front_heavy': [3, 3, 2, 1],   # Total: 9 blocos
+        'back_heavy':  [1, 2, 3, 3]    # Total: 9 blocos
+    }
+    stage_depths = depth_configs[depth_config]
+    
     # Configurar transforms
     train_transform, val_transform = get_transforms()
     
@@ -415,6 +435,7 @@ def objective(trial, best_f1_tracker, args):
         print(f'\nTrial {trial.number} | Fold {fold + 1}/{args.k_folds}')
         print(f'Hyperparameters: lr={lr:.6f}, batch_size={batch_size}, '
               f'stem_channels={stem_channels}, block_type={block_type}, head_type={head_type}')
+        print(f'Architecture: depth_config={depth_config}, stage_depths={stage_depths}')
         
         # Criar samplers para train e validation
         train_sampler = SubsetRandomSampler(train_ids)
@@ -449,7 +470,7 @@ def objective(trial, best_f1_tracker, args):
             num_classes=args.num_classes,
             stem_channels=stem_channels,
             stage_channels=[64, 128, 256, 512],
-            stage_depths=[2, 2, 3, 2],
+            stage_depths=stage_depths,
             groups=8,
             width_per_group=4,
             block_type=block_type,
@@ -516,7 +537,9 @@ def objective(trial, best_f1_tracker, args):
             'batch_size': batch_size,
             'stem_channels': stem_channels,
             'block_type': block_type,
-            'head_type': head_type
+            'head_type': head_type,
+            'depth_config': depth_config,
+            'stage_depths': stage_depths
         }
         best_f1_tracker['fold_results'] = fold_results
         
@@ -543,7 +566,8 @@ def objective(trial, best_f1_tracker, args):
                     'num_classes': args.num_classes,
                     'stem_channels': stem_channels,
                     'stage_channels': [64, 128, 256, 512],
-                    'stage_depths': [2, 2, 3, 2],
+                    'stage_depths': stage_depths,
+                    'depth_config': depth_config,
                     'groups': 8,
                     'width_per_group': 4,
                     'block_type': block_type,
@@ -637,7 +661,7 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         num_classes=args.num_classes,
         stem_channels=best_params['stem_channels'],
         stage_channels=[64, 128, 256, 512],
-        stage_depths=[2, 2, 3, 2],
+        stage_depths=best_params['stage_depths'],
         groups=8,
         width_per_group=4,
         block_type=best_params['block_type'],
