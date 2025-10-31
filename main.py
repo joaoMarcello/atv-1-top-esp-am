@@ -8,7 +8,7 @@ from optuna.samplers import TPESampler
 import numpy as np
 import pandas as pd
 from sklearn.utils.class_weight import compute_class_weight
-from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import confusion_matrix, f1_score, cohen_kappa_score
 import os
 from tqdm import tqdm
@@ -438,8 +438,8 @@ def objective(trial, best_f1_tracker, args):
         'balanced',     # Configuração padrão
         # 'deep',         # Redes profundas
         # 'very_deep',    # Muito profundas
-        # 'front_heavy',  # Mais blocos nos primeiros stages
-        # 'back_heavy'    # Mais blocos nos últimos stages
+        'front_heavy',  # Mais blocos nos primeiros stages
+        'back_heavy'    # Mais blocos nos últimos stages
     ])
     
     depth_configs = {
@@ -462,15 +462,24 @@ def objective(trial, best_f1_tracker, args):
         transform=train_transform
     )
     
-    # Configurar K-Fold Cross Validation
-    kfold = KFold(n_splits=args.k_folds, shuffle=True, random_state=args.random_seed)
+    # Obter labels do dataset para estratificação
+    # Precisamos dos labels de todas as amostras para o StratifiedKFold
+    all_labels = []
+    for idx in range(len(full_dataset)):
+        _, label = full_dataset[idx]
+        all_labels.append(label)
+    all_labels = np.array(all_labels)
+    
+    # Configurar Stratified K-Fold Cross Validation
+    # StratifiedKFold garante que a proporção de classes seja mantida em cada fold
+    kfold = StratifiedKFold(n_splits=args.k_folds, shuffle=True, random_state=args.random_seed)
     fold_losses = []
     fold_results = []  # Armazenar resultados detalhados de cada fold
     fold_model_states = []  # Armazenar estados dos modelos de cada fold
     fold_histories = []  # Armazenar históricos de treinamento de cada fold
     
-    # Iterar sobre os folds
-    for fold, (train_ids, val_ids) in enumerate(kfold.split(full_dataset)):
+    # Iterar sobre os folds (usando labels para estratificação)
+    for fold, (train_ids, val_ids) in enumerate(kfold.split(np.zeros(len(all_labels)), all_labels)):
         # Sempre mostrar trial e fold atuais
         print(f'\n{"="*80}')
         print(f'Trial {trial.number} | Fold {fold + 1}/{args.k_folds}')
