@@ -453,13 +453,25 @@ def objective(trial, best_f1_tracker, args):
         torch.cuda.empty_cache()
     
     # Sugerir hiperparâmetros
-    lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+    head_type = trial.suggest_categorical('head_type', ['normal_head', 'coral_head'])
+    
+    # Learning rate adaptado ao tipo de head
+    if head_type == "coral_head":
+        # CORAL: usar learning rate menor (Adam é mais agressivo)
+        lr = trial.suggest_float('lr', 1e-5, 1e-3, log=True)
+    else:
+        # Normal head: range padrão para RMSprop
+        lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+    
     weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
+    
+    # Momentum/beta1: usado tanto para RMSprop quanto para AdamW
+    # Controla a média móvel dos gradientes (primeiro momento)
     momentum = trial.suggest_float('momentum', 0.8, 0.99)
+    
     batch_size = trial.suggest_categorical('batch_size', [8])
     stem_channels = trial.suggest_categorical('stem_channels', [16, 32])
     block_type = trial.suggest_categorical('block_type', ['residual', 'se_attention', 'self_attention'])
-    head_type = trial.suggest_categorical('head_type', ['normal_head', 'coral_head'])
     
     # Otimizar profundidade da rede (stage_depths)
     depth_config = trial.suggest_categorical('depth_config', [
@@ -578,8 +590,24 @@ def objective(trial, best_f1_tracker, args):
                 # Usar pesos de classe pré-calculados para lidar com desbalanceamento
                 criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
             
-            # Criar otimizador
-            optimizer = optim.RMSprop(model.parameters(), lr=lr, weight_decay=weight_decay, momentum=momentum)
+            # Criar otimizador baseado no tipo de head
+            if head_type == "coral_head":
+                # CORAL: usar AdamW (recomendado pelo paper original)
+                # Usar momentum como beta1 para consistência com RMSprop
+                optimizer = optim.AdamW(
+                    model.parameters(),
+                    lr=lr,
+                    weight_decay=weight_decay,
+                    betas=(momentum, 0.999)  # beta1 = momentum sugerido
+                )
+            else:
+                # Normal head: usar RMSprop
+                optimizer = optim.RMSprop(
+                    model.parameters(),
+                    lr=lr,
+                    weight_decay=weight_decay,
+                    momentum=momentum
+                )
             
             # Treinar fold
             fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch, fold_model_state, fold_history = train_fold(
