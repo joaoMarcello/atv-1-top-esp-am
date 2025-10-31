@@ -6,6 +6,8 @@ import torchvision.transforms as transforms
 import optuna
 from optuna.samplers import TPESampler
 import numpy as np
+import pandas as pd
+from sklearn.utils.class_weight import compute_class_weight
 from sklearn.model_selection import KFold
 from sklearn.metrics import confusion_matrix, f1_score, cohen_kappa_score
 import os
@@ -83,7 +85,31 @@ def get_args():
     
     return args
 
-
+def get_weights(mode: int = 2, csv_dir: str = 'data/train_labels_v2.csv', class_counts = None):
+    if class_counts is None:
+        df = pd.read_csv(os.path.normpath(csv_dir))
+        class_counts = df['level'].value_counts().sort_index().to_list()
+        # print(df['level'].value_counts())
+        # class_counts = [6677, 1501, 1855]
+    print("Class count: ", class_counts)
+    
+    if mode == 1:
+        class_weights = [1.0 / count for count in class_counts]
+        total_weight = sum(class_weights)
+        class_weights = [weight / total_weight for weight in class_weights]
+        return np.array(class_weights)
+    elif mode == 2:
+        # classes = np.array([0, 1, 2])
+        classes = np.array(list(range(len(class_counts))))
+        class_counts = np.array(class_counts)
+        class_weights = compute_class_weight(
+            class_weight='balanced',
+            classes=classes,
+            y=np.repeat(classes, class_counts)
+        )
+        return class_weights
+    else:
+        return None
 
 
 class EarlyStopping:
@@ -365,6 +391,7 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
         if show_epoch_details:
             print(f'Train - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
                   f'F1: {train_metrics["f1_score"]:.4f} | Kappa: {train_metrics["kappa"]:.4f}')
+            print(f'Train - Sen: {train_metrics["sensitivity"]:.4f} | Spec: {train_metrics["specificity"]:.4f}')
             print(f'Val   - Loss: {val_metrics["loss"]:.4f} | Acc: {val_metrics["accuracy"]*100:.2f}% | '
                   f'F1: {val_metrics["f1_score"]:.4f} | Kappa: {val_metrics["kappa"]:.4f}')
             print(f'Val   - Sen: {val_metrics["sensitivity"]:.4f} | Spec: {val_metrics["specificity"]:.4f}')
