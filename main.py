@@ -427,7 +427,7 @@ def objective(trial, best_f1_tracker, args):
     lr = trial.suggest_float('lr', 1e-5, 1e-2, log=True)
     weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
     momentum = trial.suggest_float('momentum', 0.8, 0.99)
-    batch_size = trial.suggest_categorical('batch_size', [4, 8, 16])
+    batch_size = trial.suggest_categorical('batch_size', [8, 16])
     stem_channels = trial.suggest_categorical('stem_channels', [16, 32])
     block_type = trial.suggest_categorical('block_type', ['residual', 'se_attention', 'self_attention'])
     head_type = trial.suggest_categorical('head_type', ['normal_head', 'coral_head'])
@@ -462,13 +462,14 @@ def objective(trial, best_f1_tracker, args):
         transform=train_transform
     )
     
-    # Obter labels do dataset para estratificação
-    # Precisamos dos labels de todas as amostras para o StratifiedKFold
-    all_labels = []
-    for idx in range(len(full_dataset)):
-        _, label = full_dataset[idx]
-        all_labels.append(label)
-    all_labels = np.array(all_labels)
+    # Obter labels diretamente do CSV para estratificação (OTIMIZADO)
+    # Muito mais rápido do que iterar pelo dataset que carrega imagens
+    df_labels = pd.read_csv(args.csv_file)
+    all_labels = df_labels['level'].values  # Numpy array direto
+    
+    # Verificar se o número de labels corresponde ao dataset
+    if len(all_labels) != len(full_dataset):
+        print(f"AVISO: Número de labels no CSV ({len(all_labels)}) != tamanho do dataset ({len(full_dataset)})")
     
     # Configurar Stratified K-Fold Cross Validation
     # StratifiedKFold garante que a proporção de classes seja mantida em cada fold
