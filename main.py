@@ -432,7 +432,7 @@ def objective(trial, best_f1_tracker, args):
         torch.cuda.empty_cache()
     
     # Sugerir hiperparâmetros
-    lr = trial.suggest_float('lr', 1e-5, 1e-2, log=True)
+    lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
     weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
     momentum = trial.suggest_float('momentum', 0.8, 0.99)
     batch_size = trial.suggest_categorical('batch_size', [8])
