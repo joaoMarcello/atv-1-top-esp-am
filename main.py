@@ -487,6 +487,13 @@ def objective(trial, best_f1_tracker, args):
     fold_model_states = []  # Armazenar estados dos modelos de cada fold
     fold_histories = []  # Armazenar históricos de treinamento de cada fold
     
+    # Pré-calcular pesos de classe (uma vez por trial, não por fold)
+    class_weights = None
+    class_weights_tensor = None
+    if head_type != "coral_head":
+        class_weights = get_weights(mode=2, csv_dir=args.csv_file)
+        class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
+    
     # Iterar sobre os folds (usando labels para estratificação)
     for fold, (train_ids, val_ids) in enumerate(kfold.split(np.zeros(len(all_labels)), all_labels)):
         # Sempre mostrar trial e fold atuais
@@ -547,7 +554,8 @@ def objective(trial, best_f1_tracker, args):
             if head_type == "coral_head":
                 criterion = CoralLoss()
             else:
-                criterion = nn.CrossEntropyLoss()
+                # Usar pesos de classe pré-calculados para lidar com desbalanceamento
+                criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
             
             # Criar otimizador
             optimizer = optim.RMSprop(model.parameters(), lr=lr, weight_decay=weight_decay, momentum=momentum)
@@ -850,7 +858,10 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     if best_params['head_type'] == "coral_head":
         criterion = CoralLoss()
     else:
-        criterion = nn.CrossEntropyLoss()
+        # Calcular pesos de classe para lidar com desbalanceamento
+        class_weights = get_weights(mode=2, csv_dir=args.csv_file)
+        class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
+        criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
     
     # Criar otimizador
     optimizer = optim.RMSprop(
