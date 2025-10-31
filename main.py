@@ -1091,7 +1091,7 @@ def main():
     
     # Callback para salvar study periodicamente
     def save_study_callback(study, trial):
-        if trial.number % args.save_study_every == 0 and trial.number > 0:
+        if trial.number % args.save_study_every == 0:
             save_study(study, args.optuna_study_pkl)
     
     # Calcular quantos trials faltam
