@@ -113,51 +113,72 @@ def get_weights(mode: int = 2, csv_dir: str = 'data/train_labels_v2.csv', class_
 
 
 class EarlyStopping:
-    """Early stopping para parar o treinamento quando o F1-score não melhorar"""
+    """Early stopping para parar o treinamento quando a métrica não melhorar"""
     
-    def __init__(self, patience=7, verbose=False, delta=0, min_epochs=10):
+    def __init__(self, patience=7, verbose=False, delta=0.001, min_epochs=10, mode='max'):
         """
         Args:
             patience (int): Quantas épocas esperar após a última melhoria
             verbose (bool): Se True, imprime mensagem para cada melhoria
-            delta (float): Mínima mudança para considerar como melhoria
+            delta (float): Mínima mudança para considerar como melhoria (padrão: 0.001 = 0.1%)
             min_epochs (int): Número mínimo de épocas antes de permitir early stopping
+            mode (str): 'max' para maximizar (F1, accuracy) ou 'min' para minimizar (loss)
         """
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.best_f1 = 0.0
+        self.best_metric = None
         self.delta = delta
         self.min_epochs = min_epochs
         self.current_epoch = 0
+        self.mode = mode
+        
+        if mode not in ['min', 'max']:
+            raise ValueError(f"mode deve ser 'min' ou 'max', recebido: {mode}")
     
-    def __call__(self, f1_score, model=None):
+    def __call__(self, metric_value, model=None):
         self.current_epoch += 1
-        score = f1_score
+        score = metric_value
         
         if self.best_score is None:
             self.best_score = score
+            self.best_metric = score
             if self.verbose:
-                print(f'F1-score improved ({self.best_f1:.6f} --> {f1_score:.6f})')
-            self.best_f1 = f1_score
-        elif score < self.best_score + self.delta:
-            self.counter += 1
-            if self.verbose:
-                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
-            # Só permite early stop se já passou do número mínimo de épocas
-            if self.counter >= self.patience and self.current_epoch >= self.min_epochs:
-                self.early_stop = True
-            elif self.counter >= self.patience and self.current_epoch < self.min_epochs:
-                if self.verbose:
-                    print(f'Early stopping suspenso: aguardando época mínima {self.min_epochs} (atual: {self.current_epoch})')
+                print(f'Métrica inicial: {metric_value:.6f}')
         else:
-            self.best_score = score
-            if self.verbose:
-                print(f'F1-score improved ({self.best_f1:.6f} --> {f1_score:.6f})')
-            self.best_f1 = f1_score
-            self.counter = 0
+            # Verificar se houve melhora baseado no mode
+            if self.mode == 'max':
+                # Para maximizar: score precisa ser > best_score + delta
+                improved = score > self.best_score + self.delta
+            else:  # mode == 'min'
+                # Para minimizar: score precisa ser < best_score - delta
+                improved = score < self.best_score - self.delta
+            
+            if not improved:
+                # Só incrementar counter APÓS atingir min_epochs
+                if self.current_epoch >= self.min_epochs:
+                    self.counter += 1
+                    if self.verbose:
+                        print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+                        print(f'  Current: {score:.6f} | Best: {self.best_score:.6f} | Delta: {self.delta:.6f}')
+                    
+                    # Verificar se deve parar
+                    if self.counter >= self.patience:
+                        self.early_stop = True
+                else:
+                    # Durante warm-up (antes de min_epochs), não penaliza
+                    if self.verbose:
+                        print(f'Warm-up epoch {self.current_epoch}/{self.min_epochs}: métrica não melhorou mas sem penalidade')
+            else:
+                improvement = abs(score - self.best_score)
+                self.best_score = score
+                self.best_metric = score
+                if self.verbose:
+                    direction = "aumentou" if self.mode == 'max' else "diminuiu"
+                    print(f'Métrica melhorou! {direction} {improvement:.6f} (de {self.best_metric:.6f} para {score:.6f})')
+                self.counter = 0
 
 
 def calculate_metrics(y_true, y_pred, num_classes=5):
@@ -343,7 +364,7 @@ def validate_epoch(model, dataloader, criterion, device, head_type, num_classes=
 def train_fold(model, train_loader, val_loader, criterion, optimizer, device, 
                n_epochs, head_type, num_classes=5, patience=7, verbose=False, show_epoch_details=True, min_epochs=10):
     """Treina um fold com early stopping baseado em F1-score e retorna histórico completo"""
-    early_stopping = EarlyStopping(patience=patience, verbose=False, min_epochs=min_epochs)
+    early_stopping = EarlyStopping(patience=patience, verbose=False, min_epochs=min_epochs, delta=0.001, mode='max')
     best_val_f1 = 0.0
     best_train_metrics = None
     best_val_metrics = None
@@ -872,7 +893,7 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     )
     
     # Treinar modelo
-    early_stopping = EarlyStopping(patience=6, verbose=True, min_epochs=10)  # Paciência maior no modelo final
+    early_stopping = EarlyStopping(patience=6, verbose=True, min_epochs=10, delta=0.001, mode='max')  # Paciência maior no modelo final
     best_val_f1 = 0.0
     best_metrics = None
     best_epoch = 0
