@@ -563,7 +563,7 @@ def objective(trial, best_f1_tracker, args):
                 n_epochs=args.n_epochs,
                 head_type=head_type,
                 num_classes=args.num_classes,
-                patience=5,  # Maior paciência para F1-score (mais volátil que loss)
+                patience=6,  # Maior paciência para F1-score (mais volátil que loss)
                 min_epochs=10,  # Aguarda 10 épocas antes de permitir early stopping
                 verbose=args.verbose,
                 show_epoch_details=args.verbose
@@ -833,7 +833,7 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     )
     
     # Treinar modelo
-    early_stopping = EarlyStopping(patience=5, verbose=True, min_epochs=10)  # Paciência maior no modelo final
+    early_stopping = EarlyStopping(patience=6, verbose=True, min_epochs=10)  # Paciência maior no modelo final
     best_val_f1 = 0.0
     best_metrics = None
     best_epoch = 0
