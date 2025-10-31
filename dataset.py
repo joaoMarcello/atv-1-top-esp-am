@@ -51,7 +51,7 @@ class EyePacsLoader(Dataset):
         label = self.data_frame.iloc[idx, 1]
         
         # Construct full image path (assuming .jpeg extension)
-        img_path = os.path.join(self.root_dir, f"{img_name}.jpeg")
+        img_path = os.path.join(self.root_dir, f"{img_name}")
         
         # Load image
         image = Image.open(img_path).convert('RGB')
