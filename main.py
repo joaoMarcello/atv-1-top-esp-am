@@ -591,6 +591,14 @@ def objective(trial, best_f1_tracker, args):
             print(f'  Train F1: {fold_train_metrics["f1_score"]:.4f} | Acc: {fold_train_metrics["accuracy"]*100:.2f}% | Kappa: {fold_train_metrics["kappa"]:.4f} | Sen: {fold_train_metrics["sensitivity"]:.4f} | Spec: {fold_train_metrics["specificity"]:.4f}')
             print(f'  Val F1: {fold_val_metrics["f1_score"]:.4f} | Acc: {fold_val_metrics["accuracy"]*100:.2f}% | Kappa: {fold_val_metrics["kappa"]:.4f} | Sen: {fold_val_metrics["sensitivity"]:.4f} | Spec: {fold_val_metrics["specificity"]:.4f}')
             
+            # Early pruning: Se o primeiro fold tem F1 < 0.7, não vale a pena continuar
+            if fold == 0 and fold_val_metrics["f1_score"] < 0.7:
+                print(f'\n!!! PRUNING: Primeiro fold com F1 muito baixo ({fold_val_metrics["f1_score"]:.4f} < 0.7)')
+                print(f'    Pulando folds restantes e indo para o próximo trial...')
+                raise optuna.exceptions.TrialPruned(
+                    f"First fold F1-score too low: {fold_val_metrics['f1_score']:.4f} < 0.7"
+                )
+            
         except RuntimeError as e:
             if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
                 print(f'\n!!! ERRO: GPU Out of Memory no Fold {fold + 1} !!!')
