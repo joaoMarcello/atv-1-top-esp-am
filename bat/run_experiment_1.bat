@@ -26,7 +26,8 @@ python main.py ^
     --data_dir "C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train" ^
     --csv_file "data/trainLabels.csv" ^
     --save_dir "best_model_data" ^
-    --num_classes 5
+    --num_classes 5 ^
+    --verbose
 
 echo.
 echo ============================================================================
