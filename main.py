@@ -595,6 +595,34 @@ def objective(trial, best_f1_tracker, args):
             if fold == 0 and fold_val_metrics["f1_score"] < 0.7:
                 print(f'\n!!! PRUNING: Primeiro fold com F1 muito baixo ({fold_val_metrics["f1_score"]:.4f} < 0.7)')
                 print(f'    Pulando folds restantes e indo para o próximo trial...')
+                
+                # Salvar informações do fold 1 no trial antes de prunar
+                trial.set_user_attr('pruned_reason', 'low_first_fold_f1')
+                trial.set_user_attr('pruned_threshold', 0.7)
+                trial.set_user_attr('folds_completed', 1)
+                trial.set_user_attr('first_fold_best_epoch', fold_best_epoch)
+                
+                # Salvar todas as métricas de treino do fold 1
+                trial.set_user_attr('first_fold_train_metrics', {
+                    k: float(v) if not isinstance(v, list) else [float(x) for x in v]
+                    for k, v in fold_train_metrics.items()
+                })
+                
+                # Salvar todas as métricas de validação do fold 1
+                trial.set_user_attr('first_fold_val_metrics', {
+                    k: float(v) if not isinstance(v, list) else [float(x) for x in v]
+                    for k, v in fold_val_metrics.items()
+                })
+                
+                # Salvar histórico de treinamento do fold 1
+                trial.set_user_attr('first_fold_history', {
+                    k: [float(x) for x in v] if isinstance(v, list) else v
+                    for k, v in fold_history.items()
+                })
+                
+                # Reportar valor intermediário para visualização no Optuna
+                trial.report(float(fold_val_metrics["f1_score"]), step=0)
+                
                 raise optuna.exceptions.TrialPruned(
                     f"First fold F1-score too low: {fold_val_metrics['f1_score']:.4f} < 0.7"
                 )
@@ -1079,6 +1107,45 @@ def main():
             f.write(f"\n{i}. Trial {trial.number} - F1-score: {trial.value:.4f}\n")
             for key, value in trial.params.items():
                 f.write(f"   {key}: {value}\n")
+        
+        # Adicionar estatísticas de pruning
+        f.write("\n" + "="*80 + "\n\n")
+        f.write("ESTATÍSTICAS DE PRUNING\n")
+        f.write("="*80 + "\n\n")
+        
+        pruned_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]
+        completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+        
+        f.write(f"Total de trials: {len(study.trials)}\n")
+        f.write(f"  - Completados: {len(completed_trials)}\n")
+        f.write(f"  - Pruned: {len(pruned_trials)}\n")
+        if len(study.trials) > 0:
+            f.write(f"  - Taxa de pruning: {100*len(pruned_trials)/len(study.trials):.1f}%\n\n")
+        
+        if pruned_trials:
+            f.write("Trials Pruned (detalhes):\n")
+            for trial in pruned_trials:
+                f.write(f"\n  Trial {trial.number}:\n")
+                f.write(f"    Razão: {trial.user_attrs.get('pruned_reason', 'N/A')}\n")
+                if 'first_fold_best_epoch' in trial.user_attrs:
+                    f.write(f"    Melhor época do Fold 1: {trial.user_attrs['first_fold_best_epoch']}\n")
+                if 'first_fold_val_metrics' in trial.user_attrs:
+                    val_metrics = trial.user_attrs['first_fold_val_metrics']
+                    f.write(f"    Métricas de Validação (Fold 1):\n")
+                    f.write(f"      F1-score: {val_metrics.get('f1_score', 'N/A'):.4f}\n")
+                    f.write(f"      Accuracy: {val_metrics.get('accuracy', 'N/A')*100:.2f}%\n")
+                    f.write(f"      Kappa: {val_metrics.get('kappa', 'N/A'):.4f}\n")
+                    f.write(f"      Sensitivity: {val_metrics.get('sensitivity', 'N/A'):.4f}\n")
+                    f.write(f"      Specificity: {val_metrics.get('specificity', 'N/A'):.4f}\n")
+                if 'first_fold_train_metrics' in trial.user_attrs:
+                    train_metrics = trial.user_attrs['first_fold_train_metrics']
+                    f.write(f"    Métricas de Treino (Fold 1):\n")
+                    f.write(f"      F1-score: {train_metrics.get('f1_score', 'N/A'):.4f}\n")
+                    f.write(f"      Accuracy: {train_metrics.get('accuracy', 'N/A')*100:.2f}%\n")
+                    f.write(f"      Kappa: {train_metrics.get('kappa', 'N/A'):.4f}\n")
+                f.write(f"    Hiperparâmetros:\n")
+                for key, value in trial.params.items():
+                    f.write(f"      {key}: {value}\n")
     
     print(f"\nResultados salvos em: {study_results_path}")
     
