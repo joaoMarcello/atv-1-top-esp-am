@@ -47,9 +47,9 @@ def get_args():
     
     # Caminhos de dados
     parser.add_argument('--data_dir', type=str,
-                        default='C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train',
+                        default='C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train_processed_224',
                         help='Diretório contendo as imagens de treinamento')
-    parser.add_argument('--csv_file', type=str, default='data/trainLabels.csv',
+    parser.add_argument('--csv_file', type=str, default='data/train_labels_v2.csv',
                         help='Arquivo CSV com os labels')
     parser.add_argument('--save_dir', type=str, default='best_model_data',
                         help='Diretório para salvar modelos e resultados')
@@ -400,7 +400,7 @@ def objective(trial, best_f1_tracker, args):
     lr = trial.suggest_float('lr', 1e-5, 1e-2, log=True)
     weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
     momentum = trial.suggest_float('momentum', 0.8, 0.99)
-    batch_size = trial.suggest_categorical('batch_size', [4, 8, 16, 24, 32])
+    batch_size = trial.suggest_categorical('batch_size', [4, 8, 16])
     stem_channels = trial.suggest_categorical('stem_channels', [16, 32])
     block_type = trial.suggest_categorical('block_type', ['residual', 'se_attention', 'self_attention'])
     head_type = trial.suggest_categorical('head_type', ['normal_head', 'coral_head'])
@@ -409,10 +409,10 @@ def objective(trial, best_f1_tracker, args):
     depth_config = trial.suggest_categorical('depth_config', [
         'shallow',      # Redes rasas, mais rápidas
         'balanced',     # Configuração padrão
-        'deep',         # Redes profundas
-        'very_deep',    # Muito profundas
-        'front_heavy',  # Mais blocos nos primeiros stages
-        'back_heavy'    # Mais blocos nos últimos stages
+        # 'deep',         # Redes profundas
+        # 'very_deep',    # Muito profundas
+        # 'front_heavy',  # Mais blocos nos primeiros stages
+        # 'back_heavy'    # Mais blocos nos últimos stages
     ])
     
     depth_configs = {
