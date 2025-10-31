@@ -569,6 +569,7 @@ def objective(trial, best_f1_tracker, args):
             # Mostrar resultado do fold
             print(f'\nFold {fold + 1} concluído:')
             print(f'  Best epoch: {fold_best_epoch}')
+            print(f'  Train F1: {fold_train_metrics["f1_score"]:.4f} | Acc: {fold_train_metrics["accuracy"]*100:.2f}% | Kappa: {fold_train_metrics["kappa"]:.4f} | Sen: {fold_train_metrics["sensitivity"]:.4f} | Spec: {fold_train_metrics["specificity"]:.4f}')
             print(f'  Val F1: {fold_val_metrics["f1_score"]:.4f} | Acc: {fold_val_metrics["accuracy"]*100:.2f}% | Kappa: {fold_val_metrics["kappa"]:.4f} | Sen: {fold_val_metrics["sensitivity"]:.4f} | Spec: {fold_val_metrics["specificity"]:.4f}')
             
         except RuntimeError as e:
