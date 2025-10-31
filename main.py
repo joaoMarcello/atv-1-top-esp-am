@@ -115,12 +115,13 @@ def get_weights(mode: int = 2, csv_dir: str = 'data/train_labels_v2.csv', class_
 class EarlyStopping:
     """Early stopping para parar o treinamento quando o F1-score não melhorar"""
     
-    def __init__(self, patience=7, verbose=False, delta=0):
+    def __init__(self, patience=7, verbose=False, delta=0, min_epochs=10):
         """
         Args:
             patience (int): Quantas épocas esperar após a última melhoria
             verbose (bool): Se True, imprime mensagem para cada melhoria
             delta (float): Mínima mudança para considerar como melhoria
+            min_epochs (int): Número mínimo de épocas antes de permitir early stopping
         """
         self.patience = patience
         self.verbose = verbose
@@ -129,8 +130,11 @@ class EarlyStopping:
         self.early_stop = False
         self.best_f1 = 0.0
         self.delta = delta
+        self.min_epochs = min_epochs
+        self.current_epoch = 0
     
     def __call__(self, f1_score, model=None):
+        self.current_epoch += 1
         score = f1_score
         
         if self.best_score is None:
@@ -142,8 +146,12 @@ class EarlyStopping:
             self.counter += 1
             if self.verbose:
                 print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
-            if self.counter >= self.patience:
+            # Só permite early stop se já passou do número mínimo de épocas
+            if self.counter >= self.patience and self.current_epoch >= self.min_epochs:
                 self.early_stop = True
+            elif self.counter >= self.patience and self.current_epoch < self.min_epochs:
+                if self.verbose:
+                    print(f'Early stopping suspenso: aguardando época mínima {self.min_epochs} (atual: {self.current_epoch})')
         else:
             self.best_score = score
             if self.verbose:
@@ -333,9 +341,9 @@ def validate_epoch(model, dataloader, criterion, device, head_type, num_classes=
 
 
 def train_fold(model, train_loader, val_loader, criterion, optimizer, device, 
-               n_epochs, head_type, num_classes=5, patience=7, verbose=False, show_epoch_details=True):
+               n_epochs, head_type, num_classes=5, patience=7, verbose=False, show_epoch_details=True, min_epochs=10):
     """Treina um fold com early stopping baseado em F1-score e retorna histórico completo"""
-    early_stopping = EarlyStopping(patience=patience, verbose=False)
+    early_stopping = EarlyStopping(patience=patience, verbose=False, min_epochs=min_epochs)
     best_val_f1 = 0.0
     best_train_metrics = None
     best_val_metrics = None
@@ -389,7 +397,7 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
         history['val_specificity'].append(val_metrics['specificity'])
         
         if show_epoch_details:
-            print(f'Train - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
+            print(f'\nTrain - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
                   f'F1: {train_metrics["f1_score"]:.4f} | Kappa: {train_metrics["kappa"]:.4f}')
             print(f'Train - Sen: {train_metrics["sensitivity"]:.4f} | Spec: {train_metrics["specificity"]:.4f}')
             print(f'Val   - Loss: {val_metrics["loss"]:.4f} | Acc: {val_metrics["accuracy"]*100:.2f}% | '
@@ -427,7 +435,7 @@ def objective(trial, best_f1_tracker, args):
     lr = trial.suggest_float('lr', 1e-5, 1e-2, log=True)
     weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
     momentum = trial.suggest_float('momentum', 0.8, 0.99)
-    batch_size = trial.suggest_categorical('batch_size', [8, 16])
+    batch_size = trial.suggest_categorical('batch_size', [8])
     stem_channels = trial.suggest_categorical('stem_channels', [16, 32])
     block_type = trial.suggest_categorical('block_type', ['residual', 'se_attention', 'self_attention'])
     head_type = trial.suggest_categorical('head_type', ['normal_head', 'coral_head'])
@@ -526,7 +534,7 @@ def objective(trial, best_f1_tracker, args):
             model = AnyNet(
                 num_classes=args.num_classes,
                 stem_channels=stem_channels,
-                stage_channels=[32, 64, 128, 256],
+                stage_channels=[16, 32, 64, 128],
                 stage_depths=stage_depths,
                 groups=8,
                 width_per_group=4,
@@ -555,7 +563,8 @@ def objective(trial, best_f1_tracker, args):
                 n_epochs=args.n_epochs,
                 head_type=head_type,
                 num_classes=args.num_classes,
-                patience=10,  # Maior paciência para F1-score (mais volátil que loss)
+                patience=5,  # Maior paciência para F1-score (mais volátil que loss)
+                min_epochs=10,  # Aguarda 10 épocas antes de permitir early stopping
                 verbose=args.verbose,
                 show_epoch_details=args.verbose
             )
@@ -816,7 +825,7 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     )
     
     # Treinar modelo
-    early_stopping = EarlyStopping(patience=15, verbose=True)  # Paciência maior no modelo final
+    early_stopping = EarlyStopping(patience=5, verbose=True, min_epochs=10)  # Paciência maior no modelo final
     best_val_f1 = 0.0
     best_metrics = None
     best_epoch = 0
