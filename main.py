@@ -516,7 +516,7 @@ def objective(trial, best_f1_tracker, args):
             model = AnyNet(
                 num_classes=args.num_classes,
                 stem_channels=stem_channels,
-                stage_channels=[64, 128, 256, 512],
+                stage_channels=[32, 64, 128, 256],
                 stage_depths=stage_depths,
                 groups=8,
                 width_per_group=4,
@@ -569,7 +569,7 @@ def objective(trial, best_f1_tracker, args):
             # Mostrar resultado do fold
             print(f'\nFold {fold + 1} concluído:')
             print(f'  Best epoch: {fold_best_epoch}')
-            print(f'  Val F1: {fold_val_metrics["f1_score"]:.4f} | Acc: {fold_val_metrics["accuracy"]*100:.2f}% | Kappa: {fold_val_metrics["kappa"]:.4f}')
+            print(f'  Val F1: {fold_val_metrics["f1_score"]:.4f} | Acc: {fold_val_metrics["accuracy"]*100:.2f}% | Kappa: {fold_val_metrics["kappa"]:.4f} | Sen: {fold_val_metrics["sensitivity"]:.4f} | Spec: {fold_val_metrics["specificity"]:.4f}')
             
         except RuntimeError as e:
             if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
