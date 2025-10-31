@@ -531,7 +531,9 @@ class CoralHead(nn.Module):
         
         # Biases independentes para cada threshold (K-1 biases)
         # Estes são os thresholds ordinais que definem as fronteiras entre classes
-        self.coral_bias = nn.Parameter(torch.zeros(num_classes - 1))
+        # CORREÇÃO: Inicializar com valores crescentes para thresholds ordenados
+        init_bias = torch.arange(num_classes - 1, dtype=torch.float32) - (num_classes - 1) / 2.0
+        self.coral_bias = nn.Parameter(init_bias)
     
     def forward(self, x):
         """
@@ -636,16 +638,16 @@ class CoralLoss(nn.Module):
         batch_size = logits.size(0)
         num_classes = logits.size(1) + 1
         
-        # Criar matriz de labels binários para cada threshold
+        # CORREÇÃO: Criar matriz de labels binários de forma vetorizada (muito mais rápido!)
         # levels[i, k] = 1 se targets[i] > k, caso contrário 0
-        levels = torch.zeros_like(logits)
+        # Para label y, queremos Y > k para k = 0, 1, ..., y-1
         
-        for i in range(batch_size):
-            # Para label y, queremos Y > k para k = 0, 1, ..., y-1
-            # Exemplo: se y=2, então Y > 0 = True, Y > 1 = True, Y > 2 = False
-            for k in range(num_classes - 1):
-                if targets[i] > k:
-                    levels[i, k] = 1.0
+        # Criar tensor de thresholds: [0, 1, 2, ..., K-2]
+        thresholds = torch.arange(num_classes - 1, dtype=torch.float32, device=logits.device)
+        
+        # Broadcasting: (B, 1) > (K-1,) -> (B, K-1)
+        # levels[i, k] = 1 se targets[i] > k
+        levels = (targets.unsqueeze(1) > thresholds.unsqueeze(0)).float()
         
         # Calcular binary cross-entropy para cada threshold
         # BCE = -[y*log(σ(x)) + (1-y)*log(1-σ(x))]
