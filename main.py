@@ -621,7 +621,7 @@ def objective(trial, best_f1_tracker, args):
                 head_type=head_type,
                 num_classes=args.num_classes,
                 patience=6,  # Maior paciência para F1-score (mais volátil que loss)
-                min_epochs=10,  # Aguarda 10 épocas antes de permitir early stopping
+                min_epochs=20,  # Aguarda 10 épocas antes de permitir early stopping
                 verbose=args.verbose,
                 show_epoch_details=args.verbose
             )
@@ -921,7 +921,7 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     )
     
     # Treinar modelo
-    early_stopping = EarlyStopping(patience=6, verbose=True, min_epochs=10, delta=0.001, mode='max')  # Paciência maior no modelo final
+    early_stopping = EarlyStopping(patience=6, verbose=True, min_epochs=20, delta=0.001, mode='max')  # Paciência maior no modelo final
     best_val_f1 = 0.0
     best_metrics = None
     best_epoch = 0
@@ -1044,9 +1044,21 @@ def load_study(filepath):
         with open(filepath, 'rb') as f:
             study = pickle.load(f)
         print(f'>>> Study carregado de: {filepath}')
-        print(f'   Trials completados: {len(study.trials)}')
-        if len(study.trials) > 0:
+        print(f'   Total de trials: {len(study.trials)}')
+        
+        # Contar trials por estado
+        completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+        pruned_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]
+        
+        print(f'   Trials completados: {len(completed_trials)}')
+        print(f'   Trials pruned: {len(pruned_trials)}')
+        
+        # Só mostrar best_value se houver trials completados
+        if len(completed_trials) > 0:
             print(f'   Melhor F1-score até agora: {study.best_value:.4f}')
+        else:
+            print(f'   Nenhum trial completado ainda (todos foram pruned)')
+        
         return study
     except FileNotFoundError:
         print(f'>>> Nenhum study anterior encontrado em {filepath}')
