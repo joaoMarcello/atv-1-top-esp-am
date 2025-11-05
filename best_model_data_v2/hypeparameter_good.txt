@@ -1,0 +1,38 @@
+lr=0.000246
+weight_decay=0.000095
+momentum=0.8801
+stem_channels=16
+block_type=self_attention
+head_type=coral_head
+depth_config=back_heavy
+stage_depths=[1, 2, 3, 3]
+
+Trial 28 | Fold 1/3
+================================================================================
+Hyperparameters:
+  - Learning: lr=0.000226, weight_decay=0.000121, momentum=0.9190
+  - Training: batch_size=8, stem_channels=16
+  - Model: block_type=self_attention, head_type=coral_head
+  - Architecture: depth_config=back_heavy, stage_depths=[1, 2, 3, 3]
+
+===============================================================================
+Trial 30 
+lr = 0.000226
+weight_decay = 0.000256
+momentum = 0.8791
+stem_channels = 16
+block_type = self_attention
+head_type = coral_head
+depth_config = back_heavy
+stage_depths = [1, 2, 3, 3]  resultado foi 26 de f1-score
+
+===============================================================================
+Trial 38
+lr = 0.000129
+weight_decay = 0.000004
+momemtum = 0.8569
+stem_channels = 16
+block_type = self_attention
+head_type = coral_head
+depth_config = front_heavy
+stage_depths = [3, 3, 2, 1] // época 26; resultados subindo; f1=0.1927 sen=0.2107 spec=0.8117 na validação
