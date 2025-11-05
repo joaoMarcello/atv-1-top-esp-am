@@ -23,9 +23,9 @@ python main.py ^
     --random_seed 42 ^
     --num_workers 4 ^
     --save_study_every 1 ^
-    --data_dir "C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train" ^
-    --csv_file "data/trainLabels.csv" ^
-    --save_dir "best_model_data" ^
+    --data_dir "C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train_processed_224" ^
+    --csv_file "data/train_labels_v2.csv" ^
+    --save_dir "best_model_data_v2" ^
     --num_classes 5 ^
     --verbose
 
