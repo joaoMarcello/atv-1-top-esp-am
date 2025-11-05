@@ -17,10 +17,10 @@ cd /d "%~dp0.."
 
 REM Executar o main.py com os parametros padrao
 python main.py ^
-    --n_epochs 25 ^
+    --n_epochs 40 ^
     --k_folds 3 ^
     --n_trials 50 ^
-    --random_seed 42 ^
+    --random_seed 24 ^
     --num_workers 6 ^
     --save_study_every 1 ^
     --data_dir "C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train_processed_224" ^
