@@ -607,6 +607,18 @@ class CoralHead(nn.Module):
         predictions = torch.argmax(probas, dim=1)
         return predictions
 
+    def predict_threshold(self, logits):
+        """
+        Método de predição oficial do CORAL: conta quantos thresholds são superados (P(Y > k) > 0.5)
+
+        Args:
+            logits: Tensor (B, K-1) com logits de cada threshold
+        Returns:
+            preds: Tensor (B,) com a classe predita para cada exemplo
+        """
+        probas_gt = torch.sigmoid(logits)
+        preds = torch.sum(probas_gt > 0.5, dim=1)
+        return preds
 
 class CoralLoss(nn.Module):
     """
