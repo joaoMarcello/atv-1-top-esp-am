@@ -593,7 +593,7 @@ class CoralHead(nn.Module):
         
         return probas
     
-    def predict(self, logits):
+    def predict_late(self, logits):
         """
         Prediz a classe ordinal mais provável
         
@@ -607,7 +607,7 @@ class CoralHead(nn.Module):
         predictions = torch.argmax(probas, dim=1)
         return predictions
 
-    def predict_threshold(self, logits):
+    def predict(self, logits):
         """
         Método de predição oficial do CORAL: conta quantos thresholds são superados (P(Y > k) > 0.5)
 
