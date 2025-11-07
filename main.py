@@ -46,6 +46,10 @@ def get_args():
                         help='Número de workers para DataLoader')
     parser.add_argument('--save_study_every', type=int, default=2,
                         help='Salvar study do Optuna a cada N trials')
+    parser.add_argument('--patience', type=int, default=6,
+                        help='Paciência para early stopping (número de épocas sem melhoria)')
+    parser.add_argument('--min_epochs', type=int, default=20,
+                        help='Número mínimo de épocas antes de permitir early stopping')
     
     # Caminhos de dados
     parser.add_argument('--data_dir', type=str,
@@ -53,12 +57,20 @@ def get_args():
                         help='Diretório contendo as imagens de treinamento')
     parser.add_argument('--csv_file', type=str, default='data/train_labels_v2.csv',
                         help='Arquivo CSV com os labels')
+    parser.add_argument('--label_column', type=str, default='level',
+                        help='Nome da coluna no CSV que contém as labels')
     parser.add_argument('--save_dir', type=str, default='best_model_data',
                         help='Diretório para salvar modelos e resultados')
     
     # Configurações do modelo
     parser.add_argument('--num_classes', type=int, default=5,
                         help='Número de classes para classificação')
+    
+    # Normalização
+    parser.add_argument('--mean', type=float, nargs=3, default=None,
+                        help='Média RGB para normalização (ex: 0.485 0.456 0.406). Se None, usa valores do ImageNet')
+    parser.add_argument('--std', type=float, nargs=3, default=None,
+                        help='Desvio padrão RGB para normalização (ex: 0.229 0.224 0.225). Se None, usa valores do ImageNet')
     
     # Device
     parser.add_argument('--device', type=str, default='auto',
@@ -85,11 +97,11 @@ def get_args():
     
     return args
 
-def get_weights(mode: int = 2, csv_dir: str = 'data/train_labels_v2.csv', class_counts = None):
+def get_weights(mode: int = 2, csv_dir: str = 'data/train_labels_v2.csv', label_column: str = 'level', class_counts = None):
     if class_counts is None:
         df = pd.read_csv(os.path.normpath(csv_dir))
-        class_counts = df['level'].value_counts().sort_index().to_list()
-        # print(df['level'].value_counts())
+        class_counts = df[label_column].value_counts().sort_index().to_list()
+        # print(df[label_column].value_counts())
         # class_counts = [6677, 1501, 1855]
     print("Class count: ", class_counts)
     
@@ -256,22 +268,38 @@ def calculate_metrics(y_true, y_pred, num_classes=5):
     }
 
 
-def get_transforms(image_size=224):
-    """Define as transformações de data augmentation"""
+def get_transforms(image_size=224, mean=None, std=None):
+    """
+    Define as transformações de data augmentation
+    
+    Args:
+        image_size (int): Tamanho para redimensionar as imagens
+        mean (list): Média RGB para normalização. Se None, usa valores do ImageNet
+        std (list): Desvio padrão RGB para normalização. Se None, usa valores do ImageNet
+    
+    Returns:
+        tuple: (train_transform, val_transform)
+    """
+    # Usar valores do ImageNet se não fornecidos
+    if mean is None:
+        mean = [0.485, 0.456, 0.406]
+    if std is None:
+        std = [0.229, 0.224, 0.225]
+    
     train_transform = transforms.Compose([
         transforms.Resize((image_size, image_size)),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomVerticalFlip(p=0.5),
         transforms.RandomRotation(degrees=(-180, 180)),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        # transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=mean, std=std)
     ])
     
     val_transform = transforms.Compose([
         transforms.Resize((image_size, image_size)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=mean, std=std)
     ])
     
     return train_transform, val_transform
@@ -453,7 +481,7 @@ def objective(trial, best_f1_tracker, args):
         torch.cuda.empty_cache()
     
     # Sugerir hiperparâmetros
-    head_type = trial.suggest_categorical('head_type', ['normal_head', 'coral_head'])
+    head_type = trial.suggest_categorical('head_type', [  'coral_head'])
     
     # Learning rate (AdamW para ambos os tipos de head)
     lr = trial.suggest_float('lr', 1e-5, 1e-3, log=True)
@@ -464,18 +492,18 @@ def objective(trial, best_f1_tracker, args):
     # Controla a média móvel dos gradientes (primeiro momento)
     beta1 = trial.suggest_float('beta1', 0.8, 0.99)
     
-    batch_size = trial.suggest_categorical('batch_size', [8])
-    stem_channels = trial.suggest_categorical('stem_channels', [16, 32, 64])
-    block_type = trial.suggest_categorical('block_type', ['residual', 'se_attention', 'self_attention'])
+    batch_size = trial.suggest_categorical('batch_size', [ 64])
+    stem_channels = trial.suggest_categorical('stem_channels', [ 64])
+    block_type = trial.suggest_categorical('block_type', [  'self_attention'])
     
     # Otimizar profundidade da rede (stage_depths)
     depth_config = trial.suggest_categorical('depth_config', [
-        'shallow',      # Redes rasas, mais rápidas
-        'balanced',     # Configuração padrão
+        # 'shallow',      # Redes rasas, mais rápidas
+        # 'balanced',     # Configuração padrão
         # 'deep',         # Redes profundas
-        # 'very_deep',    # Muito profundas
-        'front_heavy',  # Mais blocos nos primeiros stages
-        'back_heavy'    # Mais blocos nos últimos stages
+        'very_deep',    # Muito profundas
+        # 'front_heavy',  # Mais blocos nos primeiros stages
+        # 'back_heavy'    # Mais blocos nos últimos stages
     ])
     
     depth_configs = {
@@ -489,19 +517,20 @@ def objective(trial, best_f1_tracker, args):
     stage_depths = depth_configs[depth_config]
     
     # Configurar transforms
-    train_transform, val_transform = get_transforms()
+    train_transform, val_transform = get_transforms(mean=args.mean, std=args.std)
     
     # Criar dataset completo
     full_dataset = EyePacsLoader(
         root_dir=args.data_dir,
         csv_file=args.csv_file,
-        transform=train_transform
+        transform=train_transform,
+        label_column=args.label_column
     )
     
     # Obter labels diretamente do CSV para estratificação (OTIMIZADO)
     # Muito mais rápido do que iterar pelo dataset que carrega imagens
     df_labels = pd.read_csv(args.csv_file)
-    all_labels = df_labels['level'].values  # Numpy array direto
+    all_labels = df_labels[args.label_column].values  # Numpy array direto
     
     # Verificar se o número de labels corresponde ao dataset
     if len(all_labels) != len(full_dataset):
@@ -517,7 +546,7 @@ def objective(trial, best_f1_tracker, args):
     
     # Pré-calcular pesos de classe (uma vez por trial, não por fold)
     # Calcular class weights para ambos os tipos de head
-    class_weights = get_weights(mode=2, csv_dir=args.csv_file)
+    class_weights = get_weights(mode=2, csv_dir=args.csv_file, label_column=args.label_column)
     class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
     
     # Iterar sobre os folds (usando labels para estratificação)
@@ -552,7 +581,8 @@ def objective(trial, best_f1_tracker, args):
             val_dataset = EyePacsLoader(
                 root_dir=args.data_dir,
                 csv_file=args.csv_file,
-                transform=val_transform
+                transform=val_transform,
+                label_column=args.label_column
             )
             
             val_loader = DataLoader(
@@ -573,7 +603,7 @@ def objective(trial, best_f1_tracker, args):
                 width_per_group=4,
                 block_type=block_type,
                 head_type=head_type,
-                stem_kernel_size=3
+                stem_kernel_size=7
             ).to(args.device)
             
             # Escolher loss apropriada baseada no head_type
@@ -603,8 +633,8 @@ def objective(trial, best_f1_tracker, args):
                 n_epochs=args.n_epochs,
                 head_type=head_type,
                 num_classes=args.num_classes,
-                patience=6,  # Maior paciência para F1-score (mais volátil que loss)
-                min_epochs=20,  # Aguarda 10 épocas antes de permitir early stopping
+                patience=args.patience,
+                min_epochs=args.min_epochs,
                 verbose=args.verbose,
                 show_epoch_details=args.verbose
             )
@@ -830,13 +860,14 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         print(f"  {key}: {value}")
     
     # Configurar transforms
-    train_transform, val_transform = get_transforms()
+    train_transform, val_transform = get_transforms(mean=args.mean, std=args.std)
     
     # Criar datasets
     train_dataset = EyePacsLoader(
         root_dir=args.data_dir,
         csv_file=args.csv_file,
-        transform=train_transform
+        transform=train_transform,
+        label_column=args.label_column
     )
     
     # Dividir em train/val (80/20)
@@ -862,7 +893,8 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     val_dataset = EyePacsLoader(
         root_dir=args.data_dir,
         csv_file=args.csv_file,
-        transform=val_transform
+        transform=val_transform,
+        label_column=args.label_column
     )
     
     val_loader = DataLoader(
@@ -879,15 +911,15 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         stem_channels=best_params['stem_channels'],
         stage_channels=[64, 128, 256, 512],
         stage_depths=best_params['stage_depths'],
-        groups=8,
+        groups=32,
         width_per_group=4,
         block_type=best_params['block_type'],
         head_type=best_params['head_type'],
-        stem_kernel_size=3
+        stem_kernel_size=7
     ).to(args.device)
     
     # Calcular class weights para lidar com desbalanceamento
-    class_weights = get_weights(mode=2, csv_dir=args.csv_file)
+    class_weights = get_weights(mode=2, csv_dir=args.csv_file, label_column=args.label_column)
     class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
     
     # Escolher loss apropriada
@@ -907,7 +939,7 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     )
     
     # Treinar modelo
-    early_stopping = EarlyStopping(patience=6, verbose=True, min_epochs=20, delta=0.001, mode='max')  # Paciência maior no modelo final
+    early_stopping = EarlyStopping(patience=args.patience, verbose=True, min_epochs=args.min_epochs, delta=0.001, mode='max')
     best_val_f1 = 0.0
     best_metrics = None
     best_epoch = 0
@@ -1075,12 +1107,23 @@ def main():
     print(f"  K-Folds: {args.k_folds}")
     print(f"  Número de trials: {args.n_trials}")
     print(f"  Num workers: {args.num_workers}")
+    print(f"  Patience: {args.patience}")
+    print(f"  Min epochs: {args.min_epochs}")
     print(f"  Verbose: {args.verbose}")
     print(f"  Salvar study a cada: {args.save_study_every} trials")
     print(f"  Data directory: {args.data_dir}")
     print(f"  CSV file: {args.csv_file}")
+    print(f"  Label column: {args.label_column}")
     print(f"  Best model save directory: {args.save_dir}")
     print(f"  Study pickle file: {args.optuna_study_pkl}")
+    
+    # Mostrar configurações de normalização
+    if args.mean is not None and args.std is not None:
+        print(f"  Normalização customizada:")
+        print(f"    Mean: {args.mean}")
+        print(f"    Std: {args.std}")
+    else:
+        print(f"  Normalização: ImageNet (mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])")
     
     # Verificar se os arquivos existem
     if not os.path.exists(args.data_dir):
