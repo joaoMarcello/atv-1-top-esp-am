@@ -152,9 +152,10 @@ class SelfAttentionBlock_GPT(nn.Module):
         out = torch.bmm(v, attn.permute(0, 2, 1))        # (B, C, N)
         out = out.view(B, C, H_down, W_down)
 
-        # Upsample de volta ao tamanho original
-        out = self.upsample(out)
-
+        # Upsample de volta ao tamanho original (garantir tamanho exato)
+        if self.downsample_ratio > 1:
+            out = nn.functional.interpolate(out, size=(H, W), mode='bilinear', align_corners=False)
+        
         # Residual com escala learnable
         out = self.gamma * out + x
         return out
@@ -503,6 +504,7 @@ class CoralHead(nn.Module):
     onde cada tarefa prevê se y > k para k = 0, 1, ..., K-2.
     
     Referência: https://arxiv.org/abs/1901.07884
+    Implementação baseada em: https://github.com/Raschka-research-group/coral-cnn
     """
     def __init__(self, in_channels, num_classes):
         """
@@ -520,20 +522,14 @@ class CoralHead(nn.Module):
         # Global Average Pooling
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         
-        # Feature extractor compartilhado
-        self.fc = nn.Linear(in_channels, in_channels // 2)
-        self.relu = nn.ReLU(inplace=True)
-        self.dropout = nn.Dropout(0.5)
-        
-        # Camada final para CORAL: K-1 neurônios de saída (um para cada threshold)
-        # Cada neurônio prevê P(Y > k) para k = 0, 1, ..., K-2
-        self.coral_fc = nn.Linear(in_channels // 2, 1, bias=False)
+        # Camada compartilhada (sem bias) - projeta features para um score escalar
+        self.fc = nn.Linear(in_channels, 1, bias=False)
         
         # Biases independentes para cada threshold (K-1 biases)
-        # Estes são os thresholds ordinais que definem as fronteiras entre classes
-        # CORREÇÃO: Inicializar com valores crescentes para thresholds ordenados
-        init_bias = torch.arange(num_classes - 1, dtype=torch.float32) - (num_classes - 1) / 2.0
-        self.coral_bias = nn.Parameter(init_bias)
+        # Durante o treinamento, a loss function CORAL garante que esses biases
+        # sejam aprendidos de forma consistente com a ordenação ordinal
+        # IMPORTANTE: Não forçamos ordenação aqui - a loss cuida disso!
+        self.coral_bias = nn.Parameter(torch.zeros(num_classes - 1))
     
     def forward(self, x):
         """
@@ -549,63 +545,59 @@ class CoralHead(nn.Module):
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         
-        # Feature extraction compartilhada
-        x = self.fc(x)
-        x = self.relu(x)
-        x = self.dropout(x)
+        # Score compartilhado (mesmo valor base para todos os thresholds)
+        logits = self.fc(x)  # (B, 1)
         
-        # Projeção para espaço 1D compartilhado
-        logits = self.coral_fc(x)  # (B, 1)
-        
-        # Adicionar os biases independentes para cada threshold
+        # Adicionar biases independentes para cada threshold
         # Broadcasting: (B, 1) + (K-1,) -> (B, K-1)
+        # Cada threshold k tem seu próprio bias que ajusta a dificuldade
         logits = logits + self.coral_bias
         
         return logits
     
-    def predict_proba(self, logits):
-        """
-        Converte os logits CORAL em probabilidades para cada classe
+    # def predict_proba(self, logits):
+    #     """
+    #     Converte os logits CORAL em probabilidades para cada classe
         
-        Args:
-            logits: Tensor (B, K-1) com logits de cada threshold
+    #     Args:
+    #         logits: Tensor (B, K-1) com logits de cada threshold
             
-        Returns:
-            probas: Tensor (B, K) com probabilidades de cada classe
-        """
-        # Aplicar sigmoid para obter P(Y > k) para cada threshold
-        probas_gt = torch.sigmoid(logits)  # (B, K-1)
+    #     Returns:
+    #         probas: Tensor (B, K) com probabilidades de cada classe
+    #     """
+    #     # Aplicar sigmoid para obter P(Y > k) para cada threshold
+    #     probas_gt = torch.sigmoid(logits)  # (B, K-1)
         
-        # Calcular probabilidades cumulativas: P(Y >= k+1)
-        # probas_gt[:, k] = P(Y > k) = P(Y >= k+1)
+    #     # Calcular probabilidades cumulativas: P(Y >= k+1)
+    #     # probas_gt[:, k] = P(Y > k) = P(Y >= k+1)
         
-        # P(Y = 0) = 1 - P(Y > 0)
-        proba_0 = 1 - probas_gt[:, 0:1]
+    #     # P(Y = 0) = 1 - P(Y > 0)
+    #     proba_0 = 1 - probas_gt[:, 0:1]
         
-        # P(Y = k) = P(Y > k-1) - P(Y > k) para k = 1, ..., K-2
-        probas_middle = probas_gt[:, :-1] - probas_gt[:, 1:]
+    #     # P(Y = k) = P(Y > k-1) - P(Y > k) para k = 1, ..., K-2
+    #     probas_middle = probas_gt[:, :-1] - probas_gt[:, 1:]
         
-        # P(Y = K-1) = P(Y > K-2)
-        proba_last = probas_gt[:, -1:]
+    #     # P(Y = K-1) = P(Y > K-2)
+    #     proba_last = probas_gt[:, -1:]
         
-        # Concatenar todas as probabilidades
-        probas = torch.cat([proba_0, probas_middle, proba_last], dim=1)
+    #     # Concatenar todas as probabilidades
+    #     probas = torch.cat([proba_0, probas_middle, proba_last], dim=1)
         
-        return probas
+    #     return probas
     
-    def predict_late(self, logits):
-        """
-        Prediz a classe ordinal mais provável
+    # def predict_late(self, logits):
+    #     """
+    #     Prediz a classe ordinal mais provável
         
-        Args:
-            logits: Tensor (B, K-1) com logits de cada threshold
+    #     Args:
+    #         logits: Tensor (B, K-1) com logits de cada threshold
             
-        Returns:
-            predictions: Tensor (B,) com a classe predita para cada exemplo
-        """
-        probas = self.predict_proba(logits)
-        predictions = torch.argmax(probas, dim=1)
-        return predictions
+    #     Returns:
+    #         predictions: Tensor (B,) com a classe predita para cada exemplo
+    #     """
+    #     probas = self.predict_proba(logits)
+    #     predictions = torch.argmax(probas, dim=1)
+    #     return predictions
 
     def predict(self, logits):
         """
@@ -622,9 +614,10 @@ class CoralHead(nn.Module):
 
 class CoralLoss(nn.Module):
     """
-    CORAL Loss para classificação ordinal
+    CORAL Loss para classificação ordinal com suporte a class weights
     
     Implementa a loss function do paper "Rank-consistent Ordinal Regression for Neural Networks"
+    com extensão para lidar com desbalanceamento de classes via importance weighting.
     
     A loss é calculada como a soma das binary cross-entropies para cada threshold ordinal.
     Para cada exemplo com label y, queremos:
@@ -633,12 +626,64 @@ class CoralLoss(nn.Module):
     
     Referência: https://arxiv.org/abs/1901.07884
     """
-    def __init__(self):
+    def __init__(self, class_weights=None):
+        """
+        Args:
+            class_weights: Tensor (K,) com pesos para cada classe.
+                          Se None, usa pesos uniformes.
+                          Exemplo: torch.tensor([0.5, 2.0, 1.5, 1.0, 3.0]) para 5 classes
+                          
+                          Os class weights são automaticamente convertidos em importance
+                          weights para cada threshold binário usando média harmônica.
+        """
         super(CoralLoss, self).__init__()
+        self.class_weights = class_weights
+        self._importance_weights = None
+        
+        if class_weights is not None:
+            # Converter class weights em importance weights para thresholds
+            self._compute_importance_weights()
+    
+    def _compute_importance_weights(self):
+        """
+        Converte class weights em importance weights para cada threshold binário
+        
+        Para cada threshold k (prediz se Y > k):
+        - Positivos (Y > k): classes k+1, k+2, ..., K-1
+        - Negativos (Y <= k): classes 0, 1, ..., k
+        
+        O peso do threshold k é calculado como média harmônica dos pesos
+        das classes envolvidas (balanceia positivos e negativos).
+        """
+        if self.class_weights is None:
+            return
+        
+        K = len(self.class_weights)  # Número de classes
+        importance_weights = []
+        
+        for k in range(K - 1):  # Para cada threshold (K-1 thresholds)
+            # Pesos das classes positivas (Y > k): classes k+1, ..., K-1
+            pos_weights = self.class_weights[k+1:]
+            # Pesos das classes negativas (Y <= k): classes 0, ..., k
+            neg_weights = self.class_weights[:k+1]
+            
+            # Média dos pesos positivos e negativos
+            avg_pos_weight = pos_weights.mean()
+            avg_neg_weight = neg_weights.mean()
+            
+            # Média harmônica para balancear contribuição de positivos e negativos
+            # Fórmula: 2 / (1/w_pos + 1/w_neg)
+            threshold_weight = 2.0 / (1.0/avg_pos_weight + 1.0/avg_neg_weight)
+            importance_weights.append(threshold_weight.item())
+        
+        self._importance_weights = torch.tensor(importance_weights, dtype=torch.float32)
+        
+        # Normalizar para média = 1.0 (mantém escala da loss)
+        self._importance_weights = self._importance_weights / self._importance_weights.mean()
     
     def forward(self, logits, targets):
         """
-        Calcula a CORAL loss
+        Calcula a CORAL loss com importance weighting
         
         Args:
             logits: Tensor (B, K-1) com logits de cada threshold
@@ -650,7 +695,7 @@ class CoralLoss(nn.Module):
         batch_size = logits.size(0)
         num_classes = logits.size(1) + 1
         
-        # CORREÇÃO: Criar matriz de labels binários de forma vetorizada (muito mais rápido!)
+        # Criar matriz de labels binários de forma vetorizada
         # levels[i, k] = 1 se targets[i] > k, caso contrário 0
         # Para label y, queremos Y > k para k = 0, 1, ..., y-1
         
@@ -661,13 +706,24 @@ class CoralLoss(nn.Module):
         # levels[i, k] = 1 se targets[i] > k
         levels = (targets.unsqueeze(1) > thresholds.unsqueeze(0)).float()
         
-        # Calcular binary cross-entropy para cada threshold
-        # BCE = -[y*log(σ(x)) + (1-y)*log(1-σ(x))]
-        loss = nn.functional.binary_cross_entropy_with_logits(
+        # Calcular binary cross-entropy para cada threshold sem redução
+        loss_per_threshold = nn.functional.binary_cross_entropy_with_logits(
             logits, 
             levels,
-            reduction='mean'
+            reduction='none'  # (B, K-1)
         )
+        
+        # Aplicar importance weights se disponíveis
+        if self._importance_weights is not None:
+            # Mover para o mesmo device se necessário
+            if self._importance_weights.device != loss_per_threshold.device:
+                self._importance_weights = self._importance_weights.to(loss_per_threshold.device)
+            
+            # Aplicar pesos: (B, K-1) * (K-1,) -> (B, K-1)
+            loss_per_threshold = loss_per_threshold * self._importance_weights.unsqueeze(0)
+        
+        # Média sobre batch e thresholds
+        loss = loss_per_threshold.mean()
         
         return loss
 
@@ -737,8 +793,8 @@ class AnyNet(nn.Module):
                  stage_channels=[64, 128, 256, 512],
                  stage_depths=[2, 3, 4, 3],
                  groups=32, width_per_group=4, 
-                 block_type="residual", se_reduction=16, stem_kernel_size=3,
-                 head_type="normal_head"):
+                 block_type="residual", se_reduction=16, stem_kernel_size=7,
+                 head_type="normal_head", init_weights=True):
         """
         Args:
             num_classes: Número de classes para classificação
@@ -749,28 +805,30 @@ class AnyNet(nn.Module):
             width_per_group: Largura de cada grupo
             block_type: Tipo de bloco - "residual", "se_attention" ou "self_attention"
             se_reduction: Fator de redução para SE block
-            stem_kernel_size: Tamanho do kernel da convolução do stem
+            stem_kernel_size: Tamanho do kernel da convolução do stem (padrão: 7)
             head_type: Tipo de head - "normal_head" ou "coral_head"
+            init_weights: Se True, inicializa pesos usando Kaiming normal
         """
         super(AnyNet, self).__init__()
         
         if head_type not in ["normal_head", "coral_head"]:
             raise ValueError(f"head_type deve ser 'normal_head' ou 'coral_head', recebido: {head_type}")
+    
         
-        # Calcular padding para manter dimensões espaciais
-        padding = stem_kernel_size // 2
-        
-        # Stem inicial com LayerNorm
+        # Stem inicial com BatchNorm e MaxPool para downsampling
+        # Entrada: (B, 3, 224, 224) -> Saída: (B, stem_channels, 112, 112)
         self.stem_conv = nn.Conv2d(3, stem_channels, kernel_size=stem_kernel_size, 
-                                   stride=1, padding=padding, bias=False)
-        self.stem_norm = nn.GroupNorm(1, stem_channels)  # GroupNorm com 1 grupo = LayerNorm
+                                   stride=2, padding=3, bias=False)
+        self.stem_norm = nn.BatchNorm2d(stem_channels)
         self.stem_relu = nn.ReLU(inplace=True)
+        self.stem_pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         
         # Criar Sequential para compatibilidade
         self.stem = nn.Sequential(
             self.stem_conv,
             self.stem_norm,
-            self.stem_relu
+            self.stem_relu,
+            self.stem_pool
         )
         
         # Construir stages
@@ -789,6 +847,38 @@ class AnyNet(nn.Module):
             self.head = CoralHead(stage_channels[-1], num_classes)
         else:  # normal_head
             self.head = AnyNetHead(stage_channels[-1], num_classes)
+        
+        # Inicializar pesos se solicitado
+        if init_weights:
+            self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """
+        Inicializa os pesos do modelo usando distribuição normal Kaiming (He initialization)
+        
+        - Conv2d: Kaiming normal com mode='fan_out' e nonlinearity='relu'
+        - BatchNorm2d/GroupNorm: weight=1, bias=0
+        - Linear: Kaiming normal com mode='fan_out' e nonlinearity='relu'
+        
+        Referência: "Delving Deep into Rectifiers: Surpassing Human-Level Performance on ImageNet Classification"
+        """
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                # Kaiming normal para camadas convolucionais
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                # BatchNorm e GroupNorm: weight=1, bias=0
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            
+            elif isinstance(m, nn.Linear):
+                # Kaiming normal para camadas lineares
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
     
     def forward(self, x):
         x = self.stem(x)
@@ -802,7 +892,7 @@ class AnyNet(nn.Module):
 
 
 # Funções auxiliares para criar modelos pré-configurados
-def create_anynet_small(num_classes=10, block_type="residual", stem_kernel_size=3, head_type="normal_head"):
+def create_anynet_small(num_classes=10, block_type="residual", stem_kernel_size=7, head_type="normal_head"):
     """Cria uma versão pequena do AnyNet"""
     return AnyNet(
         num_classes=num_classes,
@@ -817,7 +907,7 @@ def create_anynet_small(num_classes=10, block_type="residual", stem_kernel_size=
     )
 
 
-def create_anynet_medium(num_classes=10, block_type="residual", stem_kernel_size=3, head_type="normal_head"):
+def create_anynet_medium(num_classes=10, block_type="residual", stem_kernel_size=7, head_type="normal_head"):
     """Cria uma versão média do AnyNet"""
     return AnyNet(
         num_classes=num_classes,
@@ -832,7 +922,7 @@ def create_anynet_medium(num_classes=10, block_type="residual", stem_kernel_size
     )
 
 
-def create_anynet_large(num_classes=10, block_type="residual", stem_kernel_size=3, head_type="normal_head"):
+def create_anynet_large(num_classes=10, block_type="residual", stem_kernel_size=7, head_type="normal_head"):
     """Cria uma versão grande do AnyNet"""
     return AnyNet(
         num_classes=num_classes,

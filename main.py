@@ -455,22 +455,17 @@ def objective(trial, best_f1_tracker, args):
     # Sugerir hiperparâmetros
     head_type = trial.suggest_categorical('head_type', ['normal_head', 'coral_head'])
     
-    # Learning rate adaptado ao tipo de head
-    if head_type == "coral_head":
-        # CORAL: usar learning rate menor (Adam é mais agressivo)
-        lr = trial.suggest_float('lr', 1e-5, 1e-3, log=True)
-    else:
-        # Normal head: range padrão para RMSprop
-        lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+    # Learning rate (AdamW para ambos os tipos de head)
+    lr = trial.suggest_float('lr', 1e-5, 1e-3, log=True)
     
     weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
     
-    # Momentum/beta1: usado tanto para RMSprop quanto para AdamW
+    # Beta1 (momentum) para AdamW
     # Controla a média móvel dos gradientes (primeiro momento)
-    momentum = trial.suggest_float('momentum', 0.8, 0.99)
+    beta1 = trial.suggest_float('beta1', 0.8, 0.99)
     
     batch_size = trial.suggest_categorical('batch_size', [8])
-    stem_channels = trial.suggest_categorical('stem_channels', [16, 32])
+    stem_channels = trial.suggest_categorical('stem_channels', [16, 32, 64])
     block_type = trial.suggest_categorical('block_type', ['residual', 'se_attention', 'self_attention'])
     
     # Otimizar profundidade da rede (stage_depths)
@@ -521,11 +516,9 @@ def objective(trial, best_f1_tracker, args):
     fold_histories = []  # Armazenar históricos de treinamento de cada fold
     
     # Pré-calcular pesos de classe (uma vez por trial, não por fold)
-    class_weights = None
-    class_weights_tensor = None
-    if head_type != "coral_head":
-        class_weights = get_weights(mode=2, csv_dir=args.csv_file)
-        class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
+    # Calcular class weights para ambos os tipos de head
+    class_weights = get_weights(mode=2, csv_dir=args.csv_file)
+    class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
     
     # Iterar sobre os folds (usando labels para estratificação)
     for fold, (train_ids, val_ids) in enumerate(kfold.split(np.zeros(len(all_labels)), all_labels)):
@@ -536,7 +529,7 @@ def objective(trial, best_f1_tracker, args):
         
         # Mostrar hiperparâmetros sempre
         print(f'Hyperparameters:')
-        print(f'  - Learning: lr={lr:.6f}, weight_decay={weight_decay:.6f}, momentum={momentum:.4f}')
+        print(f'  - Learning: lr={lr:.6f}, weight_decay={weight_decay:.6f}, beta1={beta1:.4f}')
         print(f'  - Training: batch_size={batch_size}, stem_channels={stem_channels}')
         print(f'  - Model: block_type={block_type}, head_type={head_type}')
         print(f'  - Architecture: depth_config={depth_config}, stage_depths={stage_depths}')
@@ -574,9 +567,9 @@ def objective(trial, best_f1_tracker, args):
             model = AnyNet(
                 num_classes=args.num_classes,
                 stem_channels=stem_channels,
-                stage_channels=[16, 32, 64, 128],
+                stage_channels=[64, 128, 256, 512],
                 stage_depths=stage_depths,
-                groups=8,
+                groups=32,
                 width_per_group=4,
                 block_type=block_type,
                 head_type=head_type,
@@ -585,29 +578,19 @@ def objective(trial, best_f1_tracker, args):
             
             # Escolher loss apropriada baseada no head_type
             if head_type == "coral_head":
-                criterion = CoralLoss()
+                # CORAL Loss com class weights
+                criterion = CoralLoss(class_weights=class_weights_tensor)
             else:
                 # Usar pesos de classe pré-calculados para lidar com desbalanceamento
                 criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
             
-            # Criar otimizador baseado no tipo de head
-            if head_type == "coral_head":
-                # CORAL: usar AdamW (recomendado pelo paper original)
-                # Usar momentum como beta1 para consistência com RMSprop
-                optimizer = optim.AdamW(
-                    model.parameters(),
-                    lr=lr,
-                    weight_decay=weight_decay,
-                    betas=(momentum, 0.999)  # beta1 = momentum sugerido
-                )
-            else:
-                # Normal head: usar RMSprop
-                optimizer = optim.RMSprop(
-                    model.parameters(),
-                    lr=lr,
-                    weight_decay=weight_decay,
-                    momentum=momentum
-                )
+            # Criar otimizador AdamW (para ambos os tipos de head)
+            optimizer = optim.AdamW(
+                model.parameters(),
+                lr=lr,
+                weight_decay=weight_decay,
+                betas=(beta1, 0.999)  # beta1 configurável, beta2 fixo em 0.999
+            )
             
             # Treinar fold
             fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch, fold_model_state, fold_history = train_fold(
@@ -748,7 +731,7 @@ def objective(trial, best_f1_tracker, args):
         best_f1_tracker['best_params'] = {
             'lr': lr,
             'weight_decay': weight_decay,
-            'momentum': momentum,
+            'beta1': beta1,
             'batch_size': batch_size,
             'stem_channels': stem_channels,
             'block_type': block_type,
@@ -903,21 +886,24 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         stem_kernel_size=3
     ).to(args.device)
     
+    # Calcular class weights para lidar com desbalanceamento
+    class_weights = get_weights(mode=2, csv_dir=args.csv_file)
+    class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
+    
     # Escolher loss apropriada
     if best_params['head_type'] == "coral_head":
-        criterion = CoralLoss()
+        # CORAL Loss com class weights
+        criterion = CoralLoss(class_weights=class_weights_tensor)
     else:
-        # Calcular pesos de classe para lidar com desbalanceamento
-        class_weights = get_weights(mode=2, csv_dir=args.csv_file)
-        class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
+        # CrossEntropyLoss com class weights
         criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
     
-    # Criar otimizador
-    optimizer = optim.RMSprop(
+    # Criar otimizador AdamW
+    optimizer = optim.AdamW(
         model.parameters(), 
         lr=best_params['lr'],
-        weight_decay=best_params.get('weight_decay', 0.0),
-        momentum=best_params.get('momentum', 0.0)
+        weight_decay=best_params.get('weight_decay', 1e-4),
+        betas=(best_params.get('beta1', 0.9), 0.999)
     )
     
     # Treinar modelo

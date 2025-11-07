@@ -161,12 +161,13 @@ def test_anynet_coral_head():
     
     # Obter predições usando o método do CORAL head
     predictions = model.head.predict(logits)
-    probabilities = model.head.predict_proba(logits)
     
     print(f"\n>>> Predições (usando método CORAL):")
     for i in range(batch_size):
+        # Calcular probabilidades P(Y > k) para visualização
+        probas_gt = torch.sigmoid(logits[i])
         print(f"  Sample {i}: Predicted class={predictions[i].item()}, "
-              f"Probability distribution={probabilities[i].tolist()}")
+              f"P(Y > k)={probas_gt.tolist()}")
     
     # Testar loss
     targets = torch.randint(0, num_classes, (batch_size,), device=device)
