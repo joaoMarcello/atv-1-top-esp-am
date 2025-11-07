@@ -44,7 +44,7 @@ def parse_args():
 
 def plot_baseline_history(history, output_path):
     """
-    Gera gráfico com 6 subplots mostrando evolução das métricas
+    Gera gráfico com 4 subplots mostrando evolução das métricas
     
     Args:
         history: Dicionário com histórico de treinamento
@@ -53,8 +53,8 @@ def plot_baseline_history(history, output_path):
     epochs = history['epochs']
     best_epoch = history.get('best_epoch', epochs[-1])
     
-    # Criar figura com 6 subplots (3x2)
-    fig, axes = plt.subplots(3, 2, figsize=(15, 18))
+    # Criar figura com 4 subplots (2x2)
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
     fig.suptitle('Baseline ResNeXt - Histórico de Treinamento', 
                 fontsize=16, fontweight='bold')
     
@@ -83,57 +83,31 @@ def plot_baseline_history(history, output_path):
     ax2.grid(True, alpha=0.3)
     ax2.set_ylim([0, 1])
     
-    # 3. Accuracy
+    # 3. Sensitivity
     ax3 = axes[1, 0]
-    ax3.plot(epochs, history['train_accuracy'], 'b-', label='Train Accuracy', linewidth=2)
-    ax3.plot(epochs, history['val_accuracy'], 'r-', label='Val Accuracy', linewidth=2)
+    ax3.plot(epochs, history['train_sensitivity'], 'b-', label='Train Sensitivity', linewidth=2)
+    ax3.plot(epochs, history['val_sensitivity'], 'r-', label='Val Sensitivity', linewidth=2)
     ax3.axvline(x=best_epoch, color='g', linestyle='--', 
                label=f'Best Epoch ({best_epoch})', linewidth=1.5)
     ax3.set_xlabel('Época', fontsize=11)
-    ax3.set_ylabel('Accuracy', fontsize=11)
-    ax3.set_title('Accuracy por Época', fontsize=12, fontweight='bold')
+    ax3.set_ylabel('Sensitivity', fontsize=11)
+    ax3.set_title('Sensitivity por Época', fontsize=12, fontweight='bold')
     ax3.legend(loc='best')
     ax3.grid(True, alpha=0.3)
     ax3.set_ylim([0, 1])
     
-    # 4. Kappa
+    # 4. Specificity
     ax4 = axes[1, 1]
-    ax4.plot(epochs, history['train_kappa'], 'b-', label='Train Kappa', linewidth=2)
-    ax4.plot(epochs, history['val_kappa'], 'r-', label='Val Kappa', linewidth=2)
+    ax4.plot(epochs, history['train_specificity'], 'b-', label='Train Specificity', linewidth=2)
+    ax4.plot(epochs, history['val_specificity'], 'r-', label='Val Specificity', linewidth=2)
     ax4.axvline(x=best_epoch, color='g', linestyle='--', 
                label=f'Best Epoch ({best_epoch})', linewidth=1.5)
     ax4.set_xlabel('Época', fontsize=11)
-    ax4.set_ylabel('Kappa', fontsize=11)
-    ax4.set_title('Kappa por Época', fontsize=12, fontweight='bold')
+    ax4.set_ylabel('Specificity', fontsize=11)
+    ax4.set_title('Specificity por Época', fontsize=12, fontweight='bold')
     ax4.legend(loc='best')
     ax4.grid(True, alpha=0.3)
     ax4.set_ylim([0, 1])
-    
-    # 5. Sensitivity
-    ax5 = axes[2, 0]
-    ax5.plot(epochs, history['train_sensitivity'], 'b-', label='Train Sensitivity', linewidth=2)
-    ax5.plot(epochs, history['val_sensitivity'], 'r-', label='Val Sensitivity', linewidth=2)
-    ax5.axvline(x=best_epoch, color='g', linestyle='--', 
-               label=f'Best Epoch ({best_epoch})', linewidth=1.5)
-    ax5.set_xlabel('Época', fontsize=11)
-    ax5.set_ylabel('Sensitivity', fontsize=11)
-    ax5.set_title('Sensitivity por Época', fontsize=12, fontweight='bold')
-    ax5.legend(loc='best')
-    ax5.grid(True, alpha=0.3)
-    ax5.set_ylim([0, 1])
-    
-    # 6. Specificity
-    ax6 = axes[2, 1]
-    ax6.plot(epochs, history['train_specificity'], 'b-', label='Train Specificity', linewidth=2)
-    ax6.plot(epochs, history['val_specificity'], 'r-', label='Val Specificity', linewidth=2)
-    ax6.axvline(x=best_epoch, color='g', linestyle='--', 
-               label=f'Best Epoch ({best_epoch})', linewidth=1.5)
-    ax6.set_xlabel('Época', fontsize=11)
-    ax6.set_ylabel('Specificity', fontsize=11)
-    ax6.set_title('Specificity por Época', fontsize=12, fontweight='bold')
-    ax6.legend(loc='best')
-    ax6.grid(True, alpha=0.3)
-    ax6.set_ylim([0, 1])
     
     # Ajustar layout e salvar
     plt.tight_layout()
