@@ -255,16 +255,32 @@ def calculate_metrics(y_true, y_pred, num_classes=5):
         kappa_class = cohen_kappa_score(y_true_binary, y_pred_binary)
         kappa_per_class.append(kappa_class)
     
+    # IoU (Intersection over Union) por classe e média
+    iou_per_class = []
+    for i in range(num_classes):
+        tp = cm[i, i]
+        fp = cm[:, i].sum() - tp
+        fn = cm[i, :].sum() - tp
+        
+        # IoU = TP / (TP + FP + FN)
+        iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
+        iou_per_class.append(iou)
+    
+    avg_iou = np.mean(iou_per_class)
+    
     return {
         'sensitivity': avg_sensitivity,
         'specificity': avg_specificity,
         'f1_score': f1,
         'kappa': kappa,
         'accuracy': accuracy,
+        'iou': avg_iou,
+        'confusion_matrix': cm,
         'sensitivities_per_class': sensitivities,
         'specificities_per_class': specificities,
         'f1_per_class': f1_per_class,
-        'kappa_per_class': kappa_per_class
+        'kappa_per_class': kappa_per_class,
+        'iou_per_class': iou_per_class
     }
 
 
@@ -447,11 +463,11 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
         
         if show_epoch_details:
             print(f'\nTrain - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
-                  f'F1: {train_metrics["f1_score"]:.4f} | Kappa: {train_metrics["kappa"]:.4f}')
-            print(f'Train - Sen: {train_metrics["sensitivity"]:.4f} | Spec: {train_metrics["specificity"]:.4f}')
+                  f'F1: {train_metrics["f1_score"]:.4f} | Kappa: {train_metrics["kappa"]:.4f} | '
+                  f'Sen: {train_metrics["sensitivity"]:.4f} | Spec: {train_metrics["specificity"]:.4f}')
             print(f'Val   - Loss: {val_metrics["loss"]:.4f} | Acc: {val_metrics["accuracy"]*100:.2f}% | '
-                  f'F1: {val_metrics["f1_score"]:.4f} | Kappa: {val_metrics["kappa"]:.4f}')
-            print(f'Val   - Sen: {val_metrics["sensitivity"]:.4f} | Spec: {val_metrics["specificity"]:.4f}')
+                  f'F1: {val_metrics["f1_score"]:.4f} | Kappa: {val_metrics["kappa"]:.4f} | '
+                  f'Sen: {val_metrics["sensitivity"]:.4f} | Spec: {val_metrics["specificity"]:.4f}')
         
         # Early stopping baseado em F1-score
         early_stopping(val_metrics['f1_score'])
@@ -481,7 +497,7 @@ def objective(trial, best_f1_tracker, args):
         torch.cuda.empty_cache()
     
     # Sugerir hiperparâmetros
-    head_type = trial.suggest_categorical('head_type', [  'coral_head'])
+    head_type = trial.suggest_categorical('head_type', [ 'normal_head', 'coral_head'])
     
     # Learning rate (AdamW para ambos os tipos de head)
     lr = trial.suggest_float('lr', 1e-5, 1e-3, log=True)
@@ -492,23 +508,26 @@ def objective(trial, best_f1_tracker, args):
     # Controla a média móvel dos gradientes (primeiro momento)
     beta1 = trial.suggest_float('beta1', 0.8, 0.99)
     
-    batch_size = trial.suggest_categorical('batch_size', [ 64])
-    stem_channels = trial.suggest_categorical('stem_channels', [ 64])
-    block_type = trial.suggest_categorical('block_type', [  'self_attention'])
+    batch_size = trial.suggest_categorical('batch_size', [ 16, 32, 64])
+    stem_channels = trial.suggest_categorical('stem_channels', [ 16, 32, 64])
+    block_type = trial.suggest_categorical('block_type', [ 'residual', 'se_attention', 'self_attention'])
+    stem_kernel_size = trial.suggest_categorical('stem_kernel_size', [3, 5, 7])
     
     # Otimizar profundidade da rede (stage_depths)
     depth_config = trial.suggest_categorical('depth_config', [
-        # 'shallow',      # Redes rasas, mais rápidas
-        # 'balanced',     # Configuração padrão
-        # 'deep',         # Redes profundas
+        'shallow',      # Redes rasas, mais rápidas
+        'balanced',     # Configuração padrão
+        'custom',       # Configuração personalizada
+        'deep',         # Redes profundas
         'very_deep',    # Muito profundas
-        # 'front_heavy',  # Mais blocos nos primeiros stages
-        # 'back_heavy'    # Mais blocos nos últimos stages
+        'front_heavy',  # Mais blocos nos primeiros stages
+        'back_heavy'    # Mais blocos nos últimos stages
     ])
     
     depth_configs = {
         'shallow':     [1, 2, 2, 1],   # Total: 6 blocos
         'balanced':    [2, 2, 3, 2],   # Total: 9 blocos (padrão atual)
+        'custom':      [3, 4, 5, 3],   # Total: 15 blocos
         'deep':        [2, 3, 4, 3],   # Total: 12 blocos
         'very_deep':   [3, 4, 6, 3],   # Total: 16 blocos
         'front_heavy': [3, 3, 2, 1],   # Total: 9 blocos
@@ -561,7 +580,7 @@ def objective(trial, best_f1_tracker, args):
         print(f'  - Learning: lr={lr:.6f}, weight_decay={weight_decay:.6f}, beta1={beta1:.4f}')
         print(f'  - Training: batch_size={batch_size}, stem_channels={stem_channels}')
         print(f'  - Model: block_type={block_type}, head_type={head_type}')
-        print(f'  - Architecture: depth_config={depth_config}, stage_depths={stage_depths}')
+        print(f'  - Architecture: depth_config={depth_config}, stage_depths={stage_depths}, stem_kernel_size={stem_kernel_size}')
         
         try:
             # Criar samplers para train e validation
@@ -603,7 +622,7 @@ def objective(trial, best_f1_tracker, args):
                 width_per_group=4,
                 block_type=block_type,
                 head_type=head_type,
-                stem_kernel_size=7
+                stem_kernel_size=stem_kernel_size
             ).to(args.device)
             
             # Escolher loss apropriada baseada no head_type
@@ -658,8 +677,10 @@ def objective(trial, best_f1_tracker, args):
             # Mostrar resultado do fold
             print(f'\nFold {fold + 1} concluído:')
             print(f'  Best epoch: {fold_best_epoch}')
-            print(f'  Train F1: {fold_train_metrics["f1_score"]:.4f} | Acc: {fold_train_metrics["accuracy"]*100:.2f}% | Kappa: {fold_train_metrics["kappa"]:.4f} | Sen: {fold_train_metrics["sensitivity"]:.4f} | Spec: {fold_train_metrics["specificity"]:.4f}')
-            print(f'  Val F1: {fold_val_metrics["f1_score"]:.4f} | Acc: {fold_val_metrics["accuracy"]*100:.2f}% | Kappa: {fold_val_metrics["kappa"]:.4f} | Sen: {fold_val_metrics["sensitivity"]:.4f} | Spec: {fold_val_metrics["specificity"]:.4f}')
+            print(f'  Train F1: {fold_train_metrics["f1_score"]:.4f} | Acc: {fold_train_metrics["accuracy"]*100:.2f}% | Kappa: {fold_train_metrics["kappa"]:.4f} | IoU: {fold_train_metrics["iou"]:.4f}')
+            print(f'  Train Sen: {fold_train_metrics["sensitivity"]:.4f} | Spec: {fold_train_metrics["specificity"]:.4f}')
+            print(f'  Val F1: {fold_val_metrics["f1_score"]:.4f} | Acc: {fold_val_metrics["accuracy"]*100:.2f}% | Kappa: {fold_val_metrics["kappa"]:.4f} | IoU: {fold_val_metrics["iou"]:.4f}')
+            print(f'  Val Sen: {fold_val_metrics["sensitivity"]:.4f} | Spec: {fold_val_metrics["specificity"]:.4f}')
             
             # Early pruning: Se o primeiro fold tem F1 < 0.7, não vale a pena continuar
             if fold == 0 and fold_val_metrics["f1_score"] < 0.7:
@@ -672,17 +693,27 @@ def objective(trial, best_f1_tracker, args):
                 trial.set_user_attr('folds_completed', 1)
                 trial.set_user_attr('first_fold_best_epoch', fold_best_epoch)
                 
+                # Função auxiliar para converter métricas
+                def convert_metrics(metrics):
+                    converted = {}
+                    for k, v in metrics.items():
+                        if k == 'confusion_matrix':
+                            converted[k] = v.tolist() if hasattr(v, 'tolist') else v
+                        elif isinstance(v, np.ndarray):
+                            converted[k] = v.tolist()
+                        elif isinstance(v, (np.integer, np.floating)):
+                            converted[k] = float(v)
+                        elif isinstance(v, list):
+                            converted[k] = [float(x) if isinstance(x, (np.integer, np.floating)) else x for x in v]
+                        else:
+                            converted[k] = v
+                    return converted
+                
                 # Salvar todas as métricas de treino do fold 1
-                trial.set_user_attr('first_fold_train_metrics', {
-                    k: float(v) if not isinstance(v, list) else [float(x) for x in v]
-                    for k, v in fold_train_metrics.items()
-                })
+                trial.set_user_attr('first_fold_train_metrics', convert_metrics(fold_train_metrics))
                 
                 # Salvar todas as métricas de validação do fold 1
-                trial.set_user_attr('first_fold_val_metrics', {
-                    k: float(v) if not isinstance(v, list) else [float(x) for x in v]
-                    for k, v in fold_val_metrics.items()
-                })
+                trial.set_user_attr('first_fold_val_metrics', convert_metrics(fold_val_metrics))
                 
                 # Salvar histórico de treinamento do fold 1
                 trial.set_user_attr('first_fold_history', {
@@ -767,13 +798,32 @@ def objective(trial, best_f1_tracker, args):
             'block_type': block_type,
             'head_type': head_type,
             'depth_config': depth_config,
-            'stage_depths': stage_depths
+            'stage_depths': stage_depths,
+            'stem_kernel_size': stem_kernel_size
         }
         best_f1_tracker['fold_results'] = fold_results
         
         # Salvar configuração e resultados
         import json
         config_path = os.path.join(args.save_dir, 'best_model_config.json')
+        
+        # Função auxiliar para converter métricas para formato serializável
+        def convert_metrics_to_serializable(metrics):
+            serializable = {}
+            for k, v in metrics.items():
+                if k == 'confusion_matrix':
+                    # Converter matriz de confusão para lista
+                    serializable[k] = v.tolist() if hasattr(v, 'tolist') else v
+                elif isinstance(v, np.ndarray):
+                    serializable[k] = v.tolist()
+                elif isinstance(v, (np.integer, np.floating)):
+                    serializable[k] = float(v)
+                elif isinstance(v, list):
+                    serializable[k] = [float(x) if isinstance(x, (np.integer, np.floating)) else x for x in v]
+                else:
+                    serializable[k] = v
+            return serializable
+        
         with open(config_path, 'w') as f:
             json.dump({
                 'trial_number': trial.number,
@@ -783,10 +833,8 @@ def objective(trial, best_f1_tracker, args):
                     {
                         'fold': fr['fold'],
                         'best_epoch': fr['best_epoch'],
-                        'train_metrics': {k: float(v) if not isinstance(v, list) else v 
-                                         for k, v in fr['train_metrics'].items()},
-                        'val_metrics': {k: float(v) if not isinstance(v, list) else v 
-                                       for k, v in fr['val_metrics'].items()}
+                        'train_metrics': convert_metrics_to_serializable(fr['train_metrics']),
+                        'val_metrics': convert_metrics_to_serializable(fr['val_metrics'])
                     }
                     for fr in fold_results
                 ],
@@ -796,11 +844,11 @@ def objective(trial, best_f1_tracker, args):
                     'stage_channels': [64, 128, 256, 512],
                     'stage_depths': stage_depths,
                     'depth_config': depth_config,
-                    'groups': 8,
+                    'groups': 32,
                     'width_per_group': 4,
                     'block_type': block_type,
                     'head_type': head_type,
-                    'stem_kernel_size': 3
+                    'stem_kernel_size': stem_kernel_size
                 }
             }, f, indent=2)
         
@@ -915,7 +963,7 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         width_per_group=4,
         block_type=best_params['block_type'],
         head_type=best_params['head_type'],
-        stem_kernel_size=7
+        stem_kernel_size=best_params['stem_kernel_size']
     ).to(args.device)
     
     # Calcular class weights para lidar com desbalanceamento
@@ -1038,9 +1086,12 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     print(f"  F1-score: {best_metrics['f1_score']:.4f}")
     print(f"  Accuracy: {best_metrics['accuracy']*100:.2f}%")
     print(f"  Kappa: {best_metrics['kappa']:.4f}")
+    print(f"  IoU: {best_metrics['iou']:.4f}")
     print(f"  Sensitivity: {best_metrics['sensitivity']:.4f}")
     print(f"  Specificity: {best_metrics['specificity']:.4f}")
     print(f"  Loss: {best_metrics['loss']:.4f}")
+    print(f"\nMatriz de Confusão:")
+    print(best_metrics['confusion_matrix'])
     print(f"\nModelo salvo em: {save_path}")
     
     return model
@@ -1236,14 +1287,24 @@ def main():
                     f.write(f"      F1-score: {val_metrics.get('f1_score', 'N/A'):.4f}\n")
                     f.write(f"      Accuracy: {val_metrics.get('accuracy', 'N/A')*100:.2f}%\n")
                     f.write(f"      Kappa: {val_metrics.get('kappa', 'N/A'):.4f}\n")
+                    f.write(f"      IoU: {val_metrics.get('iou', 'N/A'):.4f}\n")
                     f.write(f"      Sensitivity: {val_metrics.get('sensitivity', 'N/A'):.4f}\n")
                     f.write(f"      Specificity: {val_metrics.get('specificity', 'N/A'):.4f}\n")
+                    if 'confusion_matrix' in val_metrics:
+                        f.write(f"      Matriz de Confusão:\n")
+                        cm = val_metrics['confusion_matrix']
+                        if isinstance(cm, list):
+                            for row in cm:
+                                f.write(f"        {row}\n")
+                        else:
+                            f.write(f"        {cm}\n")
                 if 'first_fold_train_metrics' in trial.user_attrs:
                     train_metrics = trial.user_attrs['first_fold_train_metrics']
                     f.write(f"    Métricas de Treino (Fold 1):\n")
                     f.write(f"      F1-score: {train_metrics.get('f1_score', 'N/A'):.4f}\n")
                     f.write(f"      Accuracy: {train_metrics.get('accuracy', 'N/A')*100:.2f}%\n")
                     f.write(f"      Kappa: {train_metrics.get('kappa', 'N/A'):.4f}\n")
+                    f.write(f"      IoU: {train_metrics.get('iou', 'N/A'):.4f}\n")
                 f.write(f"    Hiperparâmetros:\n")
                 for key, value in trial.params.items():
                     f.write(f"      {key}: {value}\n")
