@@ -665,7 +665,8 @@ def objective(trial, best_f1_tracker, args):
                 'fold': fold + 1,
                 'best_epoch': fold_best_epoch,
                 'train_metrics': fold_train_metrics,
-                'val_metrics': fold_val_metrics
+                'val_metrics': fold_val_metrics,
+                'history': fold_history
             })
             
             # Armazenar estado do modelo (pesos)
