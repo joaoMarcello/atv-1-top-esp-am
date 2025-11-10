@@ -785,6 +785,8 @@ def objective(trial, best_f1_tracker, args):
     print(f'Average F1-score: {avg_f1:.4f} (todos os {args.k_folds} folds completados)')
     print(f'F1-scores por fold: {[f"{f:.4f}" for f in fold_losses]}')
     print(f'{"="*80}\n')
+
+    trial.set_user_attr('fold_results', fold_results)
     
     # Se este é o melhor trial até agora, salvar o modelo e configurações
     if avg_f1 > best_f1_tracker['best_f1']:
