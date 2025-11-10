@@ -474,7 +474,7 @@ class AnyNetHead(nn.Module):
     """
     Head (classificador) da AnyNet
     """
-    def __init__(self, in_channels, num_classes):
+    def __init__(self, in_channels, num_classes, dropout=0.0):
         """
         Args:
             in_channels: Número de canais de entrada (saída do último stage)
@@ -484,11 +484,15 @@ class AnyNetHead(nn.Module):
         
         # Global Average Pooling e classificador
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
+
         self.fc = nn.Linear(in_channels, num_classes)
     
     def forward(self, x):
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
+        x = self.dropout(x)
         x = self.fc(x)
         return x
 
@@ -506,7 +510,7 @@ class CoralHead(nn.Module):
     Referência: https://arxiv.org/abs/1901.07884
     Implementação baseada em: https://github.com/Raschka-research-group/coral-cnn
     """
-    def __init__(self, in_channels, num_classes):
+    def __init__(self, in_channels, num_classes, dropout=0.0):
         """
         Args:
             in_channels: Número de canais de entrada (saída do último stage)
@@ -521,6 +525,8 @@ class CoralHead(nn.Module):
         
         # Global Average Pooling
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
         
         # Camada compartilhada (sem bias) - projeta features para um score escalar
         self.fc = nn.Linear(in_channels, 1, bias=False)
@@ -544,6 +550,7 @@ class CoralHead(nn.Module):
         # Global Average Pooling
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
+        x = self.dropout(x)
         
         # Score compartilhado (mesmo valor base para todos os thresholds)
         logits = self.fc(x)  # (B, 1)
@@ -794,7 +801,7 @@ class AnyNet(nn.Module):
                  stage_depths=[2, 3, 4, 3],
                  groups=32, width_per_group=4, 
                  block_type="residual", se_reduction=16, stem_kernel_size=7,
-                 head_type="normal_head", init_weights=True):
+                 head_type="normal_head", head_dropout=0.0, init_weights=True):
         """
         Args:
             num_classes: Número de classes para classificação
@@ -844,9 +851,9 @@ class AnyNet(nn.Module):
         
         # Head (classificador) - escolher baseado no head_type
         if head_type == "coral_head":
-            self.head = CoralHead(stage_channels[-1], num_classes)
+            self.head = CoralHead(stage_channels[-1], num_classes, dropout=head_dropout)
         else:  # normal_head
-            self.head = AnyNetHead(stage_channels[-1], num_classes)
+            self.head = AnyNetHead(stage_channels[-1], num_classes, dropout=head_dropout)
         
         # Inicializar pesos se solicitado
         if init_weights:

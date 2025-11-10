@@ -521,6 +521,14 @@ def objective(trial, best_f1_tracker, args):
     # Sugerir hiperparâmetros
     head_type = trial.suggest_categorical('head_type', [ 'normal_head', 'coral_head'])
     
+    # Dropout no head (range depende do head_type)
+    # CORAL head: até 0.3 (já tem regularização implícita)
+    # Normal head: até 0.5 (padrão ResNet/EfficientNet)
+    if head_type == 'coral_head':
+        head_dropout = trial.suggest_float('head_dropout', 0.0, 0.3)
+    else:  # normal_head
+        head_dropout = trial.suggest_float('head_dropout', 0.0, 0.5)
+    
     # Learning rate (AdamW para ambos os tipos de head)
     lr = trial.suggest_float('lr', 1e-5, 1e-3, log=True)
     
@@ -601,7 +609,7 @@ def objective(trial, best_f1_tracker, args):
         print(f'Hyperparameters:')
         print(f'  - Learning: lr={lr:.6f}, weight_decay={weight_decay:.6f}, beta1={beta1:.4f}')
         print(f'  - Training: batch_size={batch_size}, stem_channels={stem_channels}')
-        print(f'  - Model: block_type={block_type}, head_type={head_type}')
+        print(f'  - Model: block_type={block_type}, head_type={head_type}, head_dropout={head_dropout:.3f}')
         print(f'  - Architecture: depth_config={depth_config}, stage_depths={stage_depths}, stem_kernel_size={stem_kernel_size}')
         
         try:
@@ -644,6 +652,7 @@ def objective(trial, best_f1_tracker, args):
                 width_per_group=4,
                 block_type=block_type,
                 head_type=head_type,
+                head_dropout=head_dropout,
                 stem_kernel_size=stem_kernel_size
             ).to(args.device)
             
@@ -832,6 +841,7 @@ def objective(trial, best_f1_tracker, args):
             'stem_channels': stem_channels,
             'block_type': block_type,
             'head_type': head_type,
+            'head_dropout': head_dropout,
             'depth_config': depth_config,
             'stage_depths': stage_depths,
             'stem_kernel_size': stem_kernel_size
@@ -883,6 +893,7 @@ def objective(trial, best_f1_tracker, args):
                     'width_per_group': 4,
                     'block_type': block_type,
                     'head_type': head_type,
+                    'head_dropout': head_dropout,
                     'stem_kernel_size': stem_kernel_size
                 }
             }, f, indent=2)
@@ -998,6 +1009,7 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         width_per_group=4,
         block_type=best_params['block_type'],
         head_type=best_params['head_type'],
+        head_dropout=best_params.get('head_dropout', 0.0),
         stem_kernel_size=best_params['stem_kernel_size']
     ).to(args.device)
     
