@@ -51,6 +51,12 @@ def get_args():
     parser.add_argument('--min_epochs', type=int, default=20,
                         help='Número mínimo de épocas antes de permitir early stopping')
     
+    # Scheduler
+    parser.add_argument('--use_scheduler', action='store_true',
+                        help='Se ativado, usa CosineAnnealingLR scheduler')
+    parser.add_argument('--scheduler_eta_min', type=float, default=1e-7,
+                        help='Learning rate mínimo para CosineAnnealingLR')
+    
     # Caminhos de dados
     parser.add_argument('--data_dir', type=str,
                         default='C:/Users/Public/Documents/DATASETS/diabetic-retinopathy-detection/train_processed_224',
@@ -406,8 +412,12 @@ def validate_epoch(model, dataloader, criterion, device, head_type, num_classes=
 
 
 def train_fold(model, train_loader, val_loader, criterion, optimizer, device, 
-               n_epochs, head_type, num_classes=5, patience=7, verbose=False, show_epoch_details=True, min_epochs=10):
-    """Treina um fold com early stopping baseado em F1-score e retorna histórico completo"""
+               n_epochs, head_type, num_classes=5, patience=7, verbose=False, show_epoch_details=True, min_epochs=10, scheduler=None):
+    """Treina um fold com early stopping baseado em F1-score e retorna histórico completo
+    
+    Args:
+        scheduler: Opcional. Scheduler de learning rate (ex: CosineAnnealingLR)
+    """
     early_stopping = EarlyStopping(patience=patience, verbose=False, min_epochs=min_epochs, delta=0.001, mode='max')
     best_val_f1 = 0.0
     best_train_metrics = None
@@ -430,12 +440,19 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
         'val_kappa': [],
         'val_sensitivity': [],
         'val_specificity': [],
+        'learning_rates': [],  # Rastrear learning rate
         'best_epoch': 0
     }
     
     for epoch in range(n_epochs):
+        # Obter learning rate atual
+        current_lr = optimizer.param_groups[0]['lr']
+        
         if show_epoch_details:
-            print(f'\nEpoch {epoch+1}/{n_epochs}')
+            if scheduler is not None:
+                print(f'\nEpoch {epoch+1}/{n_epochs} (LR: {current_lr:.2e})')
+            else:
+                print(f'\nEpoch {epoch+1}/{n_epochs}')
         
         # Treinar
         train_metrics = train_epoch(model, train_loader, criterion, 
@@ -460,6 +477,7 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
         history['val_kappa'].append(val_metrics['kappa'])
         history['val_sensitivity'].append(val_metrics['sensitivity'])
         history['val_specificity'].append(val_metrics['specificity'])
+        history['learning_rates'].append(current_lr)
         
         if show_epoch_details:
             print(f'\nTrain - Loss: {train_metrics["loss"]:.4f} | Acc: {train_metrics["accuracy"]*100:.2f}% | '
@@ -468,6 +486,10 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
             print(f'Val   - Loss: {val_metrics["loss"]:.4f} | Acc: {val_metrics["accuracy"]*100:.2f}% | '
                   f'F1: {val_metrics["f1_score"]:.4f} | Kappa: {val_metrics["kappa"]:.4f} | '
                   f'Sen: {val_metrics["sensitivity"]:.4f} | Spec: {val_metrics["specificity"]:.4f}')
+        
+        # Atualizar scheduler (se existir)
+        if scheduler is not None:
+            scheduler.step()
         
         # Early stopping baseado em F1-score
         early_stopping(val_metrics['f1_score'])
@@ -641,6 +663,15 @@ def objective(trial, best_f1_tracker, args):
                 betas=(beta1, 0.999)  # beta1 configurável, beta2 fixo em 0.999
             )
             
+            # Criar scheduler (se habilitado)
+            scheduler = None
+            if args.use_scheduler:
+                scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer,
+                    T_max=args.n_epochs,
+                    eta_min=args.scheduler_eta_min
+                )
+            
             # Treinar fold
             fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch, fold_model_state, fold_history = train_fold(
                 model=model,
@@ -655,7 +686,8 @@ def objective(trial, best_f1_tracker, args):
                 patience=args.patience,
                 min_epochs=args.min_epochs,
                 verbose=args.verbose,
-                show_epoch_details=args.verbose
+                show_epoch_details=args.verbose,
+                scheduler=scheduler
             )
             
             fold_losses.append(fold_f1)
@@ -989,6 +1021,16 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         betas=(best_params.get('beta1', 0.9), 0.999)
     )
     
+    # Criar scheduler (se habilitado)
+    scheduler = None
+    if args.use_scheduler:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.n_epochs,
+            eta_min=args.scheduler_eta_min
+        )
+        print(f"\n>>> Usando CosineAnnealingLR (eta_min={args.scheduler_eta_min:.2e})")
+    
     # Treinar modelo
     early_stopping = EarlyStopping(patience=args.patience, verbose=True, min_epochs=args.min_epochs, delta=0.001, mode='max')
     best_val_f1 = 0.0
@@ -1016,8 +1058,14 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     print(f"\nIniciando treinamento do modelo final por {args.n_epochs} épocas...")
     
     for epoch in range(args.n_epochs):
+        # Obter learning rate atual
+        current_lr = optimizer.param_groups[0]['lr']
+        
         print(f'\n{"="*80}')
-        print(f'Epoch {epoch+1}/{args.n_epochs}')
+        if scheduler is not None:
+            print(f'Epoch {epoch+1}/{args.n_epochs} (LR: {current_lr:.2e})')
+        else:
+            print(f'Epoch {epoch+1}/{args.n_epochs}')
         print(f'{"="*80}')
         
         # Treinar
@@ -1053,6 +1101,10 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         print(f'\nVal   - Loss: {val_metrics["loss"]:.4f} | Acc: {val_metrics["accuracy"]*100:.2f}% | '
               f'F1: {val_metrics["f1_score"]:.4f} | Kappa: {val_metrics["kappa"]:.4f}')
         print(f'        Sen: {val_metrics["sensitivity"]:.4f} | Spec: {val_metrics["specificity"]:.4f}')
+        
+        # Atualizar scheduler (se existir)
+        if scheduler is not None:
+            scheduler.step()
         
         # Salvar melhor modelo baseado em F1-score
         if val_metrics['f1_score'] > best_val_f1:
@@ -1164,6 +1216,9 @@ def main():
     print(f"  Patience: {args.patience}")
     print(f"  Min epochs: {args.min_epochs}")
     print(f"  Verbose: {args.verbose}")
+    print(f"  Scheduler: {'CosineAnnealingLR' if args.use_scheduler else 'None'}")
+    if args.use_scheduler:
+        print(f"  Scheduler eta_min: {args.scheduler_eta_min:.2e}")
     print(f"  Salvar study a cada: {args.save_study_every} trials")
     print(f"  Data directory: {args.data_dir}")
     print(f"  CSV file: {args.csv_file}")
