@@ -4,7 +4,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, SubsetRandomSampler
 import torchvision.transforms as transforms
 import optuna
-from optuna.samplers import TPESampler
+from optuna.samplers import TPESampler, QMCSampler, CmaEsSampler
 import numpy as np
 import pandas as pd
 from sklearn.utils.class_weight import compute_class_weight
@@ -1499,25 +1499,73 @@ def main():
     print("\n" + "="*80)
     print("INICIANDO OTIMIZAÇÃO")
     print("="*80)
+    print("\n📊 Estratégia de Busca: Sampler Híbrido (QMC → CmaEs)")
+    print("  ✅ Fase 1 (trials 0-14): QMCSampler")
+    print("     → Exploração uniforme do espaço de hiperparâmetros")
+    print("     → Cobertura determinística (Quasi-Monte Carlo)")
+    print("  ✅ Fase 2 (trials 15+): CmaEsSampler")
+    print("     → Otimização focada em regiões promissoras")
+    print("     → Captura correlações entre hiperparâmetros")
+    print("     → IPOP-CMA-ES (restart automático se convergir)")
+    print("")
     
     # Tentar carregar study anterior
     study = load_study(args.optuna_study_pkl)
     
     if study is None:
-        # Criar novo study
-        print("Criando novo study...")
+        # Criar novo study com sampler híbrido (QMC → CmaEs)
+        print("Criando novo study com sampler híbrido (QMC → CmaEs)...")
+        print("  - Fase 1 (trials 0-14): QMCSampler (exploração uniforme)")
+        print("  - Fase 2 (trials 15+): CmaEsSampler (otimização focada)")
+        
+        # Começar com QMC para exploração inicial
+        sampler = QMCSampler(seed=args.random_seed)
+        
         study = optuna.create_study(
             direction='maximize',  # Maximizar F1-score
-            sampler=TPESampler(seed=args.random_seed),
-            study_name='anynet_optimization'
+            sampler=sampler,
+            study_name='anynet_optimization_hybrid'
         )
     else:
         print(f"Continuando otimização do trial {len(study.trials)}")
+        
+        # Decidir qual sampler usar baseado no número de trials
+        if len(study.trials) < 15:
+            print(f"  → Usando QMCSampler (exploração - trials {len(study.trials)}/14)")
+        else:
+            print(f"  → Usando CmaEsSampler (otimização - trial {len(study.trials)})")
+            print(f"  → Troca já ocorreu (study tem {len(study.trials)} trials, threshold=15)")
+            
+            # Trocar para CmaEs após 15 trials
+            study.sampler = CmaEsSampler(
+                seed=args.random_seed,
+                n_startup_trials=0,  # Já temos trials do QMC
+                restart_strategy='ipop',  # Restart se convergir prematuramente
+                warn_independent_sampling=False  # Silenciar warnings sobre categóricos
+            )
     
-    # Callback para salvar study periodicamente
+    # Callback para salvar study periodicamente e trocar sampler
     def save_study_callback(study, trial):
+        # Salvar study periodicamente
         if trial.number % args.save_study_every == 0:
             save_study(study, args.optuna_study_pkl)
+        
+        # Trocar de QMC para CmaEs após 15 trials
+        if trial.number == 14:  # Último trial do QMC (0-indexed)
+            print(f"\n{'='*80}")
+            print(f">>> TROCANDO SAMPLER: QMCSampler → CmaEsSampler")
+            print(f"{'='*80}")
+            print(f"  - Fase de exploração completa (15 trials com QMC)")
+            print(f"  - Iniciando fase de otimização (CmaEs)")
+            print(f"{'='*80}\n")
+            
+            # Trocar sampler para CmaEs
+            study.sampler = CmaEsSampler(
+                seed=args.random_seed,
+                n_startup_trials=0,  # Já temos 15 trials do QMC
+                restart_strategy='ipop',  # IPOP-CMA-ES (restart se convergir)
+                warn_independent_sampling=False  # Silenciar warnings sobre hiperparâmetros categóricos
+            )
     
     # Calcular quantos trials faltam
     trials_completed = len(study.trials)
