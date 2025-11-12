@@ -15,6 +15,7 @@ from tqdm import tqdm
 import warnings
 import pickle
 import argparse
+from timm.scheduler import CosineLRScheduler
 warnings.filterwarnings('ignore')
 
 from model import AnyNet, CoralLoss
@@ -96,6 +97,10 @@ def get_args():
                         help='Se ativado, usa CosineAnnealingLR scheduler')
     parser.add_argument('--scheduler_eta_min', type=float, default=1e-7,
                         help='Learning rate mínimo para CosineAnnealingLR')
+    parser.add_argument('--scheduler_warmup_epochs', type=int, default=5,
+                        help='Número de épocas de warm-up linear (padrão: 5)')
+    parser.add_argument('--scheduler_warmup_lr', type=float, default=1e-6,
+                        help='LR inicial no warm-up (padrão: 1e-6)')
     
     # Caminhos de dados
     parser.add_argument('--data_dir', type=str,
@@ -535,7 +540,7 @@ def train_fold(model, train_loader, val_loader, criterion, optimizer, device,
         
         # Atualizar scheduler (se existir)
         if scheduler is not None:
-            scheduler.step()
+            scheduler.step(epoch + 1)  # timm scheduler precisa de epoch+1
         
         # Early stopping baseado em F1-score
         early_stopping(val_metrics['f1_score'])
@@ -839,11 +844,19 @@ def objective(trial, best_f1_tracker, args):
             # Criar scheduler (se habilitado)
             scheduler = None
             if args.use_scheduler:
-                scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                scheduler = CosineLRScheduler(
                     optimizer,
-                    T_max=args.n_epochs,
-                    eta_min=args.scheduler_eta_min
+                    t_initial=args.n_epochs,
+                    lr_min=args.scheduler_eta_min,
+                    warmup_t=args.scheduler_warmup_epochs,
+                    warmup_lr_init=args.scheduler_warmup_lr,
+                    warmup_prefix=True,
+                    cycle_limit=1,
+                    t_in_epochs=True
                 )
+                print(f">>> Usando timm CosineLRScheduler com warm-up:")
+                print(f"    - Warm-up: {args.scheduler_warmup_epochs} épocas (lr: {args.scheduler_warmup_lr:.2e} → {lr:.2e})")
+                print(f"    - Cosine: {args.n_epochs - args.scheduler_warmup_epochs} épocas (lr: {lr:.2e} → {args.scheduler_eta_min:.2e})")
             
             # Treinar fold
             fold_f1, fold_train_metrics, fold_val_metrics, fold_best_epoch, fold_model_state, fold_history = train_fold(
@@ -1238,12 +1251,19 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     # Criar scheduler (se habilitado)
     scheduler = None
     if args.use_scheduler:
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        scheduler = CosineLRScheduler(
             optimizer,
-            T_max=args.n_epochs,
-            eta_min=args.scheduler_eta_min
+            t_initial=args.n_epochs,
+            lr_min=args.scheduler_eta_min,
+            warmup_t=args.scheduler_warmup_epochs,
+            warmup_lr_init=args.scheduler_warmup_lr,
+            warmup_prefix=True,
+            cycle_limit=1,
+            t_in_epochs=True
         )
-        print(f"\n>>> Usando CosineAnnealingLR (eta_min={args.scheduler_eta_min:.2e})")
+        print(f"\n>>> Usando timm CosineLRScheduler com warm-up:")
+        print(f"    - Warm-up: {args.scheduler_warmup_epochs} épocas (lr: {args.scheduler_warmup_lr:.2e} → {best_params['lr']:.2e})")
+        print(f"    - Cosine: {args.n_epochs - args.scheduler_warmup_epochs} épocas (lr: {best_params['lr']:.2e} → {args.scheduler_eta_min:.2e})")
     
     # Treinar modelo
     early_stopping = EarlyStopping(patience=args.patience, verbose=True, min_epochs=args.min_epochs, delta=0.001, mode='max')
@@ -1318,7 +1338,7 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         
         # Atualizar scheduler (se existir)
         if scheduler is not None:
-            scheduler.step()
+            scheduler.step(epoch + 1)  # timm scheduler precisa de epoch+1
         
         # Salvar melhor modelo baseado em F1-score
         if val_metrics['f1_score'] > best_val_f1:
@@ -1433,9 +1453,10 @@ def main():
     print(f"  Patience: {args.patience}")
     print(f"  Min epochs: {args.min_epochs}")
     print(f"  Verbose: {args.verbose}")
-    print(f"  Scheduler: {'CosineAnnealingLR' if args.use_scheduler else 'None'}")
+    print(f"  Scheduler: {'timm CosineLRScheduler (com warm-up)' if args.use_scheduler else 'None'}")
     if args.use_scheduler:
-        print(f"  Scheduler eta_min: {args.scheduler_eta_min:.2e}")
+        print(f"    - Warm-up: {args.scheduler_warmup_epochs} épocas (lr: {args.scheduler_warmup_lr:.2e})")
+        print(f"    - LR mínimo: {args.scheduler_eta_min:.2e}")
     print(f"  Salvar study a cada: {args.save_study_every} trials")
     print(f"  Data directory: {args.data_dir}")
     print(f"  CSV file: {args.csv_file}")
