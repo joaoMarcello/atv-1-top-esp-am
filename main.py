@@ -8,7 +8,7 @@ from optuna.samplers import TPESampler
 import numpy as np
 import pandas as pd
 from sklearn.utils.class_weight import compute_class_weight
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, StratifiedGroupKFold
 from sklearn.metrics import confusion_matrix, f1_score, cohen_kappa_score
 import os
 from tqdm import tqdm
@@ -19,6 +19,40 @@ warnings.filterwarnings('ignore')
 
 from model import AnyNet, CoralLoss
 from dataset import EyePacsLoader
+
+
+def split_by_patient_proportional(df, test_size=0.2, random_state=42, label_column='quality', patient_column='paciente'):
+    """
+    Divide pacientes em treino/teste garantindo que a estratificação
+    leve em conta TODAS as imagens (não apenas a classe majoritária).
+    
+    Args:
+        df: DataFrame com as colunas de imagem, label e paciente
+        test_size: Proporção de validação (padrão: 0.2 = 20%)
+        random_state: Seed para reprodutibilidade
+        label_column: Nome da coluna com as labels
+        patient_column: Nome da coluna com ID do paciente
+    
+    Returns:
+        train_ids, val_ids: Arrays com índices de treino e validação
+    """
+    # Ajusta número de splits com base no test_size
+    n_splits = int(1 / test_size)
+    
+    # X pode ser qualquer coisa, y é a classe (label), groups são os pacientes
+    X = df.index
+    y = df[label_column]
+    groups = df[patient_column]
+
+    sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    # Pegamos apenas a primeira divisão (1 fold como validação)
+    for train_idx, val_idx in sgkf.split(X, y, groups):
+        train_ids = df.iloc[train_idx].index.values
+        val_ids = df.iloc[val_idx].index.values
+        break
+
+    return train_ids, val_ids
 
 
 def get_args():
@@ -37,7 +71,7 @@ def get_args():
     parser.add_argument('--n_epochs', type=int, default=50,
                         help='Número de épocas por trial')
     parser.add_argument('--k_folds', type=int, default=3,
-                        help='Número de folds para validação cruzada')
+                        help='Número de folds para validação cruzada (use 1 para desabilitar K-Fold CV e usar apenas um split train/val)')
     parser.add_argument('--n_trials', type=int, default=50,
                         help='Número de trials para otimização Optuna')
     parser.add_argument('--random_seed', type=int, default=42,
@@ -71,6 +105,8 @@ def get_args():
                         help='Arquivo CSV com os labels')
     parser.add_argument('--label_column', type=str, default='level',
                         help='Nome da coluna no CSV que contém as labels')
+    parser.add_argument('--patient_column', type=str, default=None,
+                        help='Nome da coluna no CSV que contém o ID do paciente (para evitar data leakage). Se None, não usa grouping por paciente')
     parser.add_argument('--save_dir', type=str, default='best_model_data',
                         help='Diretório para salvar modelos e resultados')
     
@@ -94,6 +130,10 @@ def get_args():
                         help='Se ativado, mostra informações detalhadas de treinamento')
     
     args = parser.parse_args()
+    
+    # Validar k_folds
+    if args.k_folds < 1:
+        raise ValueError(f"k_folds deve ser >= 1, recebido: {args.k_folds}")
     
     # Configurar device
     if args.device == 'auto':
@@ -546,8 +586,8 @@ def objective(trial, best_f1_tracker, args):
     # Controla a média móvel dos gradientes (primeiro momento)
     beta1 = trial.suggest_float('beta1', 0.8, 0.99)
     
-    batch_size = trial.suggest_categorical('batch_size', [ 16, 32, 64])
-    stem_channels = trial.suggest_categorical('stem_channels', [ 16, 32, 64])
+    batch_size = trial.suggest_categorical('batch_size', [ 32, 64])
+    stem_channels = trial.suggest_categorical('stem_channels', [ 32, 64])
     block_type = trial.suggest_categorical('block_type', [ 'residual', 'se_attention', 'self_attention'])
     stem_kernel_size = trial.suggest_categorical('stem_kernel_size', [3, 5, 7])
     
@@ -589,13 +629,112 @@ def objective(trial, best_f1_tracker, args):
     df_labels = pd.read_csv(args.csv_file)
     all_labels = df_labels[args.label_column].values  # Numpy array direto
     
+    # Obter IDs de pacientes se especificado (para evitar data leakage)
+    patient_groups = None
+    if args.patient_column is not None:
+        if args.patient_column not in df_labels.columns:
+            raise ValueError(f"Coluna de paciente '{args.patient_column}' não encontrada no CSV. Colunas disponíveis: {df_labels.columns.tolist()}")
+        patient_groups = df_labels[args.patient_column].values
+        
+        # Contar estatísticas de pacientes
+        unique_patients = np.unique(patient_groups)
+        images_per_patient = df_labels.groupby(args.patient_column).size()
+        
+        print(f'\n📊 Informações de Pacientes:')
+        print(f'   Total de pacientes únicos: {len(unique_patients)}')
+        print(f'   Total de imagens: {len(df_labels)}')
+        print(f'   Média de imagens por paciente: {images_per_patient.mean():.2f}')
+        print(f'   Min imagens por paciente: {images_per_patient.min()}')
+        print(f'   Max imagens por paciente: {images_per_patient.max()}')
+        print(f'   ✅ Usando StratifiedGroupKFold (pacientes não vazam entre folds)')
+    
     # Verificar se o número de labels corresponde ao dataset
     if len(all_labels) != len(full_dataset):
         print(f"AVISO: Número de labels no CSV ({len(all_labels)}) != tamanho do dataset ({len(full_dataset)})")
     
-    # Configurar Stratified K-Fold Cross Validation
+    # Configurar Stratified K-Fold Cross Validation ou Split Único
     # StratifiedKFold garante que a proporção de classes seja mantida em cada fold
-    kfold = StratifiedKFold(n_splits=args.k_folds, shuffle=True, random_state=args.random_seed)
+    # StratifiedGroupKFold garante adicionalmente que grupos (pacientes) não vazem entre folds
+    
+    if args.k_folds == 1:
+        # ====================================================================
+        # MODO: Split Único (80% treino, 20% validação)
+        # ====================================================================
+        print(f'\n📋 Configurando Split Único (k_folds=1):')
+        print(f'   Proporção: 80% treino, 20% validação')
+        
+        if patient_groups is not None:
+            # ✅ USAR FUNÇÃO split_by_patient_proportional
+            # Split estratificado por PACIENTE usando StratifiedGroupKFold internamente
+            print(f'   ✅ Usando split_by_patient_proportional (StratifiedGroupKFold interno)')
+            
+            train_ids, val_ids = split_by_patient_proportional(
+                df=df_labels,
+                test_size=0.2,
+                random_state=args.random_seed,
+                label_column=args.label_column,
+                patient_column=args.patient_column
+            )
+            
+            # Estatísticas
+            train_patients = df_labels.iloc[train_ids][args.patient_column].nunique()
+            val_patients = df_labels.iloc[val_ids][args.patient_column].nunique()
+            
+            print(f'   Treino: {train_patients} pacientes, {len(train_ids)} imagens')
+            print(f'   Val: {val_patients} pacientes, {len(val_ids)} imagens')
+            
+            # Verificar distribuição de classes
+            train_class_dist = df_labels.iloc[train_ids][args.label_column].value_counts().sort_index()
+            val_class_dist = df_labels.iloc[val_ids][args.label_column].value_counts().sort_index()
+            print(f'   Distribuição treino: {train_class_dist.to_dict()}')
+            print(f'   Distribuição val: {val_class_dist.to_dict()}')
+            
+            # Verificar se não há vazamento de pacientes
+            train_patients_set = set(df_labels.iloc[train_ids][args.patient_column].unique())
+            val_patients_set = set(df_labels.iloc[val_ids][args.patient_column].unique())
+            overlap = train_patients_set & val_patients_set
+            
+            if len(overlap) > 0:
+                print(f'   ⚠️ ALERTA: {len(overlap)} pacientes aparecem em TREINO e VALIDAÇÃO!')
+            else:
+                print(f'   ✅ Nenhum paciente vaza entre treino e validação')
+        else:
+            # Split estratificado por IMAGEM (pode haver data leakage se múltiplas imagens/paciente)
+            from sklearn.model_selection import train_test_split
+            
+            indices = np.arange(len(all_labels))
+            train_ids, val_ids = train_test_split(
+                indices,
+                test_size=0.2,
+                stratify=all_labels,
+                random_state=args.random_seed,
+                shuffle=True
+            )
+            
+            print(f'   ⚠️ Split por imagem (sem considerar pacientes)')
+            print(f'   Treino: {len(train_ids)} imagens')
+            print(f'   Val: {len(val_ids)} imagens')
+            print(f'   AVISO: Se houver múltiplas imagens do mesmo paciente, pode haver DATA LEAKAGE!')
+        
+        # Criar lista com único split para manter compatibilidade com loop de folds
+        fold_iterator = [(train_ids, val_ids)]
+        
+    else:
+        # ====================================================================
+        # MODO: Validação Cruzada (K-Fold CV)
+        # ====================================================================
+        if patient_groups is not None:
+            # Usar StratifiedGroupKFold para evitar data leakage entre pacientes
+            kfold = StratifiedGroupKFold(n_splits=args.k_folds, shuffle=True, random_state=args.random_seed)
+            fold_iterator = kfold.split(np.zeros(len(all_labels)), all_labels, groups=patient_groups)
+        else:
+            # Usar StratifiedKFold padrão (sem considerar pacientes)
+            print(f'\n⚠️ AVISO: Nenhuma coluna de paciente especificada!')
+            print(f'   Se o dataset tem múltiplas imagens do mesmo paciente, haverá DATA LEAKAGE!')
+            print(f'   Recomendação: use --patient_column para evitar que o mesmo paciente apareça em treino e validação')
+            kfold = StratifiedKFold(n_splits=args.k_folds, shuffle=True, random_state=args.random_seed)
+            fold_iterator = kfold.split(np.zeros(len(all_labels)), all_labels)
+    
     fold_losses = []
     fold_results = []  # Armazenar resultados detalhados de cada fold
     fold_model_states = []  # Armazenar estados dos modelos de cada fold
@@ -606,12 +745,29 @@ def objective(trial, best_f1_tracker, args):
     class_weights = get_weights(mode=2, csv_dir=args.csv_file, label_column=args.label_column)
     class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
     
-    # Iterar sobre os folds (usando labels para estratificação)
-    for fold, (train_ids, val_ids) in enumerate(kfold.split(np.zeros(len(all_labels)), all_labels)):
+    # Iterar sobre os folds (ou split único se k_folds=1)
+    for fold, (train_ids, val_ids) in enumerate(fold_iterator):
         # Sempre mostrar trial e fold atuais
         print(f'\n{"="*80}')
-        print(f'Trial {trial.number} | Fold {fold + 1}/{args.k_folds}')
+        if args.k_folds == 1:
+            print(f'Trial {trial.number} | Split Único (Train/Val)')
+        else:
+            print(f'Trial {trial.number} | Fold {fold + 1}/{args.k_folds}')
         print(f'{"="*80}')
+        
+        # Verificar se não há vazamento de pacientes (se patient_column especificado)
+        if patient_groups is not None and args.verbose:
+            train_patients = set(patient_groups[train_ids])
+            val_patients = set(patient_groups[val_ids])
+            overlap = train_patients & val_patients
+            
+            if len(overlap) > 0:
+                print(f'\n⚠️ ALERTA: {len(overlap)} pacientes aparecem em TREINO e VALIDAÇÃO!')
+                print(f'   Pacientes com vazamento: {list(overlap)[:5]}...')
+            else:
+                print(f'\n✅ Sem vazamento de pacientes:')
+                print(f'   Treino: {len(train_patients)} pacientes únicos, {len(train_ids)} imagens')
+                print(f'   Val: {len(val_patients)} pacientes únicos, {len(val_ids)} imagens')
         
         # Mostrar hiperparâmetros sempre
         print(f'Hyperparameters:')
@@ -667,7 +823,7 @@ def objective(trial, best_f1_tracker, args):
             # Escolher loss apropriada baseada no head_type
             if head_type == "coral_head":
                 # CORAL Loss com class weights
-                criterion = CoralLoss(class_weights=class_weights_tensor)
+                criterion = CoralLoss(class_weights=None)
             else:
                 # Usar pesos de classe pré-calculados para lidar com desbalanceamento
                 criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
@@ -725,29 +881,39 @@ def objective(trial, best_f1_tracker, args):
             fold_histories.append(fold_history)
             
             # Mostrar resultado do fold
-            print(f'\nFold {fold + 1} concluído:')
+            if args.k_folds == 1:
+                print(f'\nSplit Único concluído:')
+            else:
+                print(f'\nFold {fold + 1} concluído:')
             print(f'  Best epoch: {fold_best_epoch}')
             print(f'  Train F1: {fold_train_metrics["f1_score"]:.4f} | Acc: {fold_train_metrics["accuracy"]*100:.2f}% | Kappa: {fold_train_metrics["kappa"]:.4f} | IoU: {fold_train_metrics["iou"]:.4f}')
             print(f'  Train Sen: {fold_train_metrics["sensitivity"]:.4f} | Spec: {fold_train_metrics["specificity"]:.4f}')
             print(f'  Val F1: {fold_val_metrics["f1_score"]:.4f} | Acc: {fold_val_metrics["accuracy"]*100:.2f}% | Kappa: {fold_val_metrics["kappa"]:.4f} | IoU: {fold_val_metrics["iou"]:.4f}')
             print(f'  Val Sen: {fold_val_metrics["sensitivity"]:.4f} | Spec: {fold_val_metrics["specificity"]:.4f}')
             
-            # Early pruning adaptativo no primeiro fold
+            # Early pruning adaptativo no primeiro fold (ou split único)
             if fold == 0:
                 current_trial_num = trial.number  # Número do trial atual
                 
                 # Fase 1: Exploração inicial (primeiros N trials sem pruning)
                 if current_trial_num < args.min_trials_before_pruning:
-                    print(f'>>> Trial {trial.number} (Fold 1): Explorando sem pruning '
-                          f'(trial {current_trial_num}/{args.min_trials_before_pruning} da fase de exploração)')
+                    if args.k_folds == 1:
+                        print(f'>>> Trial {trial.number}: Explorando sem pruning '
+                              f'(trial {current_trial_num}/{args.min_trials_before_pruning} da fase de exploração)')
+                    else:
+                        print(f'>>> Trial {trial.number} (Fold 1): Explorando sem pruning '
+                              f'(trial {current_trial_num}/{args.min_trials_before_pruning} da fase de exploração)')
                 
                 # Fase 2: Pruning ativo com threshold configurável
                 elif fold_val_metrics["f1_score"] < args.pruning_threshold:
-                    print(f'\n!!! PRUNING: Primeiro fold com F1 muito baixo ({fold_val_metrics["f1_score"]:.4f} < {args.pruning_threshold})')
+                    if args.k_folds == 1:
+                        print(f'\n!!! PRUNING: Validação com F1 muito baixo ({fold_val_metrics["f1_score"]:.4f} < {args.pruning_threshold})')
+                    else:
+                        print(f'\n!!! PRUNING: Primeiro fold com F1 muito baixo ({fold_val_metrics["f1_score"]:.4f} < {args.pruning_threshold})')
                     print(f'    Configuração não promissora, pulando para próximo trial...')
                     
                     # Salvar informações do fold 1 no trial antes de prunar
-                    trial.set_user_attr('pruned_reason', 'low_first_fold_f1')
+                    trial.set_user_attr('pruned_reason', 'low_validation_f1' if args.k_folds == 1 else 'low_first_fold_f1')
                     trial.set_user_attr('pruned_threshold', args.pruning_threshold)
                     trial.set_user_attr('folds_completed', 1)
                     trial.set_user_attr('first_fold_best_epoch', fold_best_epoch)
@@ -783,12 +949,20 @@ def objective(trial, best_f1_tracker, args):
                     # Reportar valor intermediário para visualização no Optuna
                     trial.report(float(fold_val_metrics["f1_score"]), step=0)
                     
-                    raise optuna.exceptions.TrialPruned(
-                        f"First fold F1-score too low: {fold_val_metrics['f1_score']:.4f} < {args.pruning_threshold}"
-                    )
+                    if args.k_folds == 1:
+                        raise optuna.exceptions.TrialPruned(
+                            f"Validation F1-score too low: {fold_val_metrics['f1_score']:.4f} < {args.pruning_threshold}"
+                        )
+                    else:
+                        raise optuna.exceptions.TrialPruned(
+                            f"First fold F1-score too low: {fold_val_metrics['f1_score']:.4f} < {args.pruning_threshold}"
+                        )
                 else:
-                    # Fold 1 passou no threshold de pruning
-                    print(f'✅ Fold 1 passou no threshold de pruning (F1={fold_val_metrics["f1_score"]:.4f} >= {args.pruning_threshold})')
+                    # Fold 1 (ou split único) passou no threshold de pruning
+                    if args.k_folds == 1:
+                        print(f'✅ Validação passou no threshold (F1={fold_val_metrics["f1_score"]:.4f} >= {args.pruning_threshold})')
+                    else:
+                        print(f'✅ Fold 1 passou no threshold de pruning (F1={fold_val_metrics["f1_score"]:.4f} >= {args.pruning_threshold})')
             
         except RuntimeError as e:
             if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
@@ -832,19 +1006,27 @@ def objective(trial, best_f1_tracker, args):
     
     # Verificar se conseguimos completar todos os folds
     if len(fold_losses) < args.k_folds:
-        print(f'\n!!! AVISO: Trial {trial.number} completou apenas {len(fold_losses)}/{args.k_folds} folds')
+        if args.k_folds == 1:
+            print(f'\n!!! AVISO: Trial {trial.number} não completou o split único')
+        else:
+            print(f'\n!!! AVISO: Trial {trial.number} completou apenas {len(fold_losses)}/{args.k_folds} folds')
         print(f'    Trial será marcado como incompleto')
         raise optuna.exceptions.TrialPruned(
             f"Only {len(fold_losses)}/{args.k_folds} folds completed due to errors."
         )
     
-    # Retornar média dos F1-scores dos folds (queremos maximizar)
+    # Retornar média dos F1-scores dos folds (ou F1 único se k_folds=1)
     avg_f1 = np.mean(fold_losses)
     print(f'\n{"="*80}')
     print(f'Trial {trial.number} CONCLUÍDO')
     print(f'{"="*80}')
-    print(f'Average F1-score: {avg_f1:.4f} (todos os {args.k_folds} folds completados)')
-    print(f'F1-scores por fold: {[f"{f:.4f}" for f in fold_losses]}')
+    
+    if args.k_folds == 1:
+        print(f'Validation F1-score: {avg_f1:.4f}')
+    else:
+        print(f'Average F1-score: {avg_f1:.4f} (todos os {args.k_folds} folds completados)')
+        print(f'F1-scores por fold: {[f"{f:.4f}" for f in fold_losses]}')
+    
     print(f'{"="*80}\n')
 
     trial.set_user_attr('fold_results', fold_results)
@@ -1242,7 +1424,10 @@ def main():
     print(f"  Device: {args.device}")
     print(f"  Número de classes: {args.num_classes}")
     print(f"  Épocas por trial: {args.n_epochs}")
-    print(f"  K-Folds: {args.k_folds}")
+    if args.k_folds == 1:
+        print(f"  K-Folds: {args.k_folds} (Validação Cruzada DESABILITADA - usando split único)")
+    else:
+        print(f"  K-Folds: {args.k_folds} (Validação Cruzada HABILITADA)")
     print(f"  Número de trials: {args.n_trials}")
     print(f"  Num workers: {args.num_workers}")
     print(f"  Patience: {args.patience}")
@@ -1255,6 +1440,15 @@ def main():
     print(f"  Data directory: {args.data_dir}")
     print(f"  CSV file: {args.csv_file}")
     print(f"  Label column: {args.label_column}")
+    
+    # Mostrar informações sobre patient grouping
+    if args.patient_column is not None:
+        print(f"  Patient column: {args.patient_column} ✅ (Evitando data leakage)")
+        print(f"    → Usando StratifiedGroupKFold (pacientes não vazam entre folds)")
+    else:
+        print(f"  Patient column: None ⚠️ (Possível data leakage se houver múltiplas imagens por paciente)")
+        print(f"    → Usando StratifiedKFold padrão")
+    
     print(f"  Best model save directory: {args.save_dir}")
     print(f"  Study pickle file: {args.optuna_study_pkl}")
     
