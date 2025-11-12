@@ -289,10 +289,6 @@ def generate_trial_plots(trial_summary, rank, output_dir):
         plt.close(fig)
         
         print(f"   ✅ Gráfico salvo: {filename}")
-        
-        return filepath
-    
-    return None
 
 
 def analyze_and_save(study, output_path, top_n=5, include_pruned=False, generate_plots=False, plots_dir='plots'):
@@ -320,16 +316,11 @@ def analyze_and_save(study, output_path, top_n=5, include_pruned=False, generate
         top_trials = [t[0] for t in trials_to_analyze[:top_n]]
         analysis_type = "PRUNED"
     else:
-        # Pegar os melhores trials completados
-        try:
-            top_trials = study.best_trials[:top_n]
-            analysis_type = "COMPLETADOS"
-        except:
-            # Se best_trials falhar, ordenar manualmente
-            completed_with_values = [(t, t.value) for t in completed_trials if t.value is not None]
-            completed_with_values.sort(key=lambda x: x[1], reverse=True)
-            top_trials = [t[0] for t in completed_with_values[:top_n]]
-            analysis_type = "COMPLETADOS"
+        # Pegar os melhores trials completados (sempre ordenar manualmente para garantir top_n)
+        completed_with_values = [(t, t.value) for t in completed_trials if t.value is not None]
+        completed_with_values.sort(key=lambda x: x[1], reverse=True)
+        top_trials = [t[0] for t in completed_with_values[:top_n]]
+        analysis_type = "COMPLETADOS"
     
     print(f"   Analisando top {len(top_trials)} trials {analysis_type}...")
     
