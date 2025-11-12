@@ -51,6 +51,12 @@ def get_args():
     parser.add_argument('--min_epochs', type=int, default=20,
                         help='Número mínimo de épocas antes de permitir early stopping')
     
+    # Pruning do Optuna
+    parser.add_argument('--pruning_threshold', type=float, default=0.60,
+                        help='Threshold de F1-score no Fold 1 para pruning (trials com F1 < threshold serão descartados)')
+    parser.add_argument('--min_trials_before_pruning', type=int, default=5,
+                        help='Número mínimo de trials antes de ativar pruning (fase de exploração inicial)')
+    
     # Scheduler
     parser.add_argument('--use_scheduler', action='store_true',
                         help='Se ativado, usa CosineAnnealingLR scheduler')
@@ -528,6 +534,8 @@ def objective(trial, best_f1_tracker, args):
         head_dropout = trial.suggest_float('head_dropout', 0.0, 0.3)
     else:  # normal_head
         head_dropout = trial.suggest_float('head_dropout', 0.0, 0.5)
+
+    # head_dropout = 0.0
     
     # Learning rate (AdamW para ambos os tipos de head)
     lr = trial.suggest_float('lr', 1e-5, 1e-3, log=True)
@@ -724,51 +732,63 @@ def objective(trial, best_f1_tracker, args):
             print(f'  Val F1: {fold_val_metrics["f1_score"]:.4f} | Acc: {fold_val_metrics["accuracy"]*100:.2f}% | Kappa: {fold_val_metrics["kappa"]:.4f} | IoU: {fold_val_metrics["iou"]:.4f}')
             print(f'  Val Sen: {fold_val_metrics["sensitivity"]:.4f} | Spec: {fold_val_metrics["specificity"]:.4f}')
             
-            # Early pruning: Se o primeiro fold tem F1 < 0.7, não vale a pena continuar
-            if fold == 0 and fold_val_metrics["f1_score"] < 0.7:
-                print(f'\n!!! PRUNING: Primeiro fold com F1 muito baixo ({fold_val_metrics["f1_score"]:.4f} < 0.7)')
-                print(f'    Pulando folds restantes e indo para o próximo trial...')
+            # Early pruning adaptativo no primeiro fold
+            if fold == 0:
+                current_trial_num = trial.number  # Número do trial atual
                 
-                # Salvar informações do fold 1 no trial antes de prunar
-                trial.set_user_attr('pruned_reason', 'low_first_fold_f1')
-                trial.set_user_attr('pruned_threshold', 0.7)
-                trial.set_user_attr('folds_completed', 1)
-                trial.set_user_attr('first_fold_best_epoch', fold_best_epoch)
+                # Fase 1: Exploração inicial (primeiros N trials sem pruning)
+                if current_trial_num < args.min_trials_before_pruning:
+                    print(f'>>> Trial {trial.number} (Fold 1): Explorando sem pruning '
+                          f'(trial {current_trial_num}/{args.min_trials_before_pruning} da fase de exploração)')
                 
-                # Função auxiliar para converter métricas
-                def convert_metrics(metrics):
-                    converted = {}
-                    for k, v in metrics.items():
-                        if k == 'confusion_matrix':
-                            converted[k] = v.tolist() if hasattr(v, 'tolist') else v
-                        elif isinstance(v, np.ndarray):
-                            converted[k] = v.tolist()
-                        elif isinstance(v, (np.integer, np.floating)):
-                            converted[k] = float(v)
-                        elif isinstance(v, list):
-                            converted[k] = [float(x) if isinstance(x, (np.integer, np.floating)) else x for x in v]
-                        else:
-                            converted[k] = v
-                    return converted
-                
-                # Salvar todas as métricas de treino do fold 1
-                trial.set_user_attr('first_fold_train_metrics', convert_metrics(fold_train_metrics))
-                
-                # Salvar todas as métricas de validação do fold 1
-                trial.set_user_attr('first_fold_val_metrics', convert_metrics(fold_val_metrics))
-                
-                # Salvar histórico de treinamento do fold 1
-                trial.set_user_attr('first_fold_history', {
-                    k: [float(x) for x in v] if isinstance(v, list) else v
-                    for k, v in fold_history.items()
-                })
-                
-                # Reportar valor intermediário para visualização no Optuna
-                trial.report(float(fold_val_metrics["f1_score"]), step=0)
-                
-                raise optuna.exceptions.TrialPruned(
-                    f"First fold F1-score too low: {fold_val_metrics['f1_score']:.4f} < 0.7"
-                )
+                # Fase 2: Pruning ativo com threshold configurável
+                elif fold_val_metrics["f1_score"] < args.pruning_threshold:
+                    print(f'\n!!! PRUNING: Primeiro fold com F1 muito baixo ({fold_val_metrics["f1_score"]:.4f} < {args.pruning_threshold})')
+                    print(f'    Configuração não promissora, pulando para próximo trial...')
+                    
+                    # Salvar informações do fold 1 no trial antes de prunar
+                    trial.set_user_attr('pruned_reason', 'low_first_fold_f1')
+                    trial.set_user_attr('pruned_threshold', args.pruning_threshold)
+                    trial.set_user_attr('folds_completed', 1)
+                    trial.set_user_attr('first_fold_best_epoch', fold_best_epoch)
+                    
+                    # Função auxiliar para converter métricas
+                    def convert_metrics(metrics):
+                        converted = {}
+                        for k, v in metrics.items():
+                            if k == 'confusion_matrix':
+                                converted[k] = v.tolist() if hasattr(v, 'tolist') else v
+                            elif isinstance(v, np.ndarray):
+                                converted[k] = v.tolist()
+                            elif isinstance(v, (np.integer, np.floating)):
+                                converted[k] = float(v)
+                            elif isinstance(v, list):
+                                converted[k] = [float(x) if isinstance(x, (np.integer, np.floating)) else x for x in v]
+                            else:
+                                converted[k] = v
+                        return converted
+                    
+                    # Salvar todas as métricas de treino do fold 1
+                    trial.set_user_attr('first_fold_train_metrics', convert_metrics(fold_train_metrics))
+                    
+                    # Salvar todas as métricas de validação do fold 1
+                    trial.set_user_attr('first_fold_val_metrics', convert_metrics(fold_val_metrics))
+                    
+                    # Salvar histórico de treinamento do fold 1
+                    trial.set_user_attr('first_fold_history', {
+                        k: [float(x) for x in v] if isinstance(v, list) else v
+                        for k, v in fold_history.items()
+                    })
+                    
+                    # Reportar valor intermediário para visualização no Optuna
+                    trial.report(float(fold_val_metrics["f1_score"]), step=0)
+                    
+                    raise optuna.exceptions.TrialPruned(
+                        f"First fold F1-score too low: {fold_val_metrics['f1_score']:.4f} < {args.pruning_threshold}"
+                    )
+                else:
+                    # Fold 1 passou no threshold de pruning
+                    print(f'✅ Fold 1 passou no threshold de pruning (F1={fold_val_metrics["f1_score"]:.4f} >= {args.pruning_threshold})')
             
         except RuntimeError as e:
             if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
