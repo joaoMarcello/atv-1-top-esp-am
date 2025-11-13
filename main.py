@@ -572,13 +572,8 @@ def objective(trial, best_f1_tracker, args):
     # Sugerir hiperparâmetros
     head_type = trial.suggest_categorical('head_type', [ 'normal_head', 'coral_head'])
     
-    # Dropout no head (range depende do head_type)
-    # CORAL head: até 0.3 (já tem regularização implícita)
-    # Normal head: até 0.5 (padrão ResNet/EfficientNet)
-    if head_type == 'coral_head':
-        head_dropout = trial.suggest_float('head_dropout', 0.0, 0.3)
-    else:  # normal_head
-        head_dropout = trial.suggest_float('head_dropout', 0.0, 0.5)
+    # Dropout no head
+    head_dropout = trial.suggest_float('head_dropout', 0.0, 0.5)
 
     # head_dropout = 0.0
     
@@ -1487,14 +1482,6 @@ def main():
     if not os.path.exists(args.csv_file):
         raise FileNotFoundError(f"Arquivo CSV não encontrado: {args.csv_file}")
     
-    # Tracker para melhor F1-score
-    best_f1_tracker = {
-        'best_f1': 0.0,
-        'best_trial': None,
-        'best_params': None,
-        'fold_results': None
-    }
-    
     # Criar study do Optuna
     print("\n" + "="*80)
     print("INICIANDO OTIMIZAÇÃO")
@@ -1512,6 +1499,36 @@ def main():
     # Tentar carregar study anterior
     study = load_study(args.optuna_study_pkl)
     
+    # ✅ CORREÇÃO: Inicializar tracker com melhor valor do study existente (se houver)
+    # Isso evita que trials piores sobrescrevam modelos melhores ao retomar otimização
+    best_f1_tracker = {
+        'best_f1': 0.0,
+        'best_trial': None,
+        'best_params': None,
+        'fold_results': None
+    }
+    
+    if study is not None:
+        # Obter trials completados (ignorar pruned)
+        completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+        
+        if completed_trials:
+            # Encontrar trial com maior F1-score
+            best_completed_trial = max(completed_trials, key=lambda t: t.value)
+            
+            # Inicializar tracker com melhor valor existente
+            best_f1_tracker['best_f1'] = best_completed_trial.value
+            best_f1_tracker['best_trial'] = best_completed_trial.number
+            best_f1_tracker['best_params'] = best_completed_trial.params
+            
+            print(f"\n✅ Tracker inicializado com melhor trial existente:")
+            print(f"   Trial: {best_completed_trial.number}")
+            print(f"   F1-score: {best_completed_trial.value:.4f}")
+            print(f"   >>> Novos trials só salvarão se F1 > {best_completed_trial.value:.4f}\n")
+        else:
+            print(f"\n⚠️ Study carregado mas sem trials completados")
+            print(f"   Tracker inicializado com F1=0.0\n")
+    
     if study is None:
         # Criar novo study com sampler híbrido (QMC → CmaEs)
         print("Criando novo study com sampler híbrido (QMC → CmaEs)...")
@@ -1519,7 +1536,7 @@ def main():
         print("  - Fase 2 (trials 15+): CmaEsSampler (otimização focada)")
         
         # Começar com QMC para exploração inicial
-        sampler = QMCSampler(seed=args.random_seed)
+        sampler = QMCSampler(seed=args.random_seed, warn_independent_sampling=False)
         
         study = optuna.create_study(
             direction='maximize',  # Maximizar F1-score
