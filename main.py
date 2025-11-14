@@ -14,6 +14,10 @@ import os
 from tqdm import tqdm
 import warnings
 import pickle
+
+import cv2
+from PIL import Image
+
 import argparse
 from timm.scheduler import CosineLRScheduler
 warnings.filterwarnings('ignore')
@@ -340,7 +344,26 @@ def calculate_metrics(y_true, y_pred, num_classes=5):
         'iou_per_class': iou_per_class
     }
 
+class CV2Resize:
+    def __init__(self, size, interpolation=cv2.INTER_LINEAR):
+        self.size = size  # int ou (h, w)
+        self.interpolation = interpolation
 
+    def __call__(self, img):
+        # img aqui é numpy RGB (H, W, C)
+        if isinstance(self.size, int):
+            h, w = img.shape[:2]
+            if h < w:
+                new_h = self.size
+                new_w = int(w * (self.size / h))
+            else:
+                new_w = self.size
+                new_h = int(h * (self.size / w))
+            resized = cv2.resize(img, (new_w, new_h), interpolation=self.interpolation)
+        else:
+            resized = cv2.resize(img, (self.size[1], self.size[0]), interpolation=self.interpolation)
+        return Image.fromarray(resized)  # converte para PIL para os próximos transforms
+    
 def get_transforms(image_size=224, mean=None, std=None):
     """
     Define as transformações de data augmentation
@@ -360,6 +383,8 @@ def get_transforms(image_size=224, mean=None, std=None):
         std = [0.229, 0.224, 0.225]
     
     train_transform = transforms.Compose([
+        # CV2Resize((image_size, image_size), interpolation=cv2.INTER_LINEAR),
+        # transforms.RandomResizedCrop(299),
         transforms.Resize((image_size, image_size)),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomVerticalFlip(p=0.5),
