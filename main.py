@@ -835,7 +835,7 @@ def objective(trial, best_f1_tracker, args):
             model = AnyNet(
                 num_classes=args.num_classes,
                 stem_channels=stem_channels,
-                stage_channels=[64, 128, 256, 512],
+                stage_channels=[256, 512, 1024, 2048],
                 stage_depths=stage_depths,
                 groups=32,
                 width_per_group=4,
