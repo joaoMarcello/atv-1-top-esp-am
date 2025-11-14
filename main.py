@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, SubsetRandomSampler
+from torch.utils.data import DataLoader, SubsetRandomSampler, Subset, WeightedRandomSampler
 import torchvision.transforms as transforms
 import optuna
 from optuna.samplers import TPESampler, QMCSampler, CmaEsSampler
@@ -89,6 +89,12 @@ def get_args():
                         help='Paciência para early stopping (número de épocas sem melhoria)')
     parser.add_argument('--min_epochs', type=int, default=20,
                         help='Número mínimo de épocas antes de permitir early stopping')
+    
+    # Balanceamento de batches
+    parser.add_argument('--use_weighted_sampler', action='store_true',
+                        help='Se ativado, usa WeightedRandomSampler para balancear classes nos batches')
+    parser.add_argument('--oversampling_factor', type=float, default=1.5,
+                        help='Fator de sobreamostragem para WeightedRandomSampler (1.0 = sem oversampling, 1.5 = +50%%, 2.0 = +100%%)')
     
     # Pruning do Optuna
     parser.add_argument('--pruning_threshold', type=float, default=0.60,
@@ -767,8 +773,8 @@ def objective(trial, best_f1_tracker, args):
     
     # Pré-calcular pesos de classe (uma vez por trial, não por fold)
     # Calcular class weights para ambos os tipos de head
-    class_weights = get_weights(mode=2, csv_dir=args.csv_file, label_column=args.label_column)
-    class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
+    # class_weights = get_weights(mode=2, csv_dir=args.csv_file, label_column=args.label_column)
+    class_weights_tensor = None # torch.FloatTensor(class_weights).to(args.device)
     
     # Iterar sobre os folds (ou split único se k_folds=1)
     for fold, (train_ids, val_ids) in enumerate(fold_iterator):
@@ -803,12 +809,37 @@ def objective(trial, best_f1_tracker, args):
         
         try:
             # Criar samplers para train e validation
-            train_sampler = SubsetRandomSampler(train_ids)
+            if args.use_weighted_sampler:
+                train_sampler = full_dataset.create_balanced_sampler(
+                    indices=train_ids,
+                    oversampling_factor=args.oversampling_factor
+                )
+                
+                if args.verbose:
+                    train_labels = all_labels[train_ids]
+                    train_class_counts = np.bincount(train_labels)
+                    num_train_samples = int(len(train_ids) * args.oversampling_factor)
+                    
+                    print(f'\n✅ WeightedRandomSampler ativado:')
+                    print(f'   Oversampling factor: {args.oversampling_factor}x')
+                    print(f'   Amostras por época: {num_train_samples} (original: {len(train_ids)})')
+                    print(f'   Distribuição de classes: {train_class_counts}')
+                    print(f'   Pesos das classes: {1.0 / train_class_counts}')
+            else:
+                # Modo padrão: SubsetRandomSampler (sem balanceamento)
+                train_sampler = SubsetRandomSampler(train_ids)
+                
+                if args.verbose:
+                    print(f'\n⚠️ WeightedRandomSampler desativado (batches não balanceados)')
+            
+            # Validação sempre usa SubsetRandomSampler
             val_sampler = SubsetRandomSampler(val_ids)
             
             # Criar dataloaders
+            # Quando usa WeightedRandomSampler: sampler retorna índices globais → usa full_dataset
+            # Quando usa SubsetRandomSampler: sampler retorna posições locais → usa full_dataset também!
             train_loader = DataLoader(
-                full_dataset,
+                full_dataset,  # Dataset completo, sampler controla os índices
                 batch_size=batch_size,
                 sampler=train_sampler,
                 num_workers=args.num_workers,
@@ -824,7 +855,7 @@ def objective(trial, best_f1_tracker, args):
             )
             
             val_loader = DataLoader(
-                val_dataset,
+                val_dataset,  # Dataset completo, val_sampler controla os índices
                 batch_size=batch_size,
                 sampler=val_sampler,
                 num_workers=args.num_workers,
@@ -1207,12 +1238,28 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     train_indices, val_indices = indices[split:], indices[:split]
     
     # Criar samplers
-    train_sampler = SubsetRandomSampler(train_indices)
+    if args.use_weighted_sampler:
+        # ✅ Usar método do dataset (evita código duplicado)
+        train_sampler = train_dataset.create_balanced_sampler(
+            indices=train_indices,
+            oversampling_factor=args.oversampling_factor
+        )
+        
+        train_subset = Subset(train_dataset, train_indices)
+        
+        num_train_samples = int(len(train_indices) * args.oversampling_factor)
+        print(f'\n✅ WeightedRandomSampler ativado no modelo final:')
+        print(f'   Oversampling factor: {args.oversampling_factor}x')
+        print(f'   Amostras por época: {num_train_samples} (original: {len(train_indices)})')
+    else:
+        train_sampler = SubsetRandomSampler(train_indices)
+        train_subset = Subset(train_dataset, train_indices)
+    
     val_sampler = SubsetRandomSampler(val_indices)
     
     # Criar dataloaders
     train_loader = DataLoader(
-        train_dataset,
+        train_subset,
         batch_size=best_params['batch_size'],
         sampler=train_sampler,
         num_workers=args.num_workers,
@@ -1226,8 +1273,10 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         label_column=args.label_column
     )
     
+    val_subset = Subset(val_dataset, val_indices)
+    
     val_loader = DataLoader(
-        val_dataset,
+        val_subset,
         batch_size=best_params['batch_size'],
         sampler=val_sampler,
         num_workers=args.num_workers,
@@ -1477,6 +1526,10 @@ def main():
     if args.use_scheduler:
         print(f"    - Warm-up: {args.scheduler_warmup_epochs} épocas (lr: {args.scheduler_warmup_lr:.2e})")
         print(f"    - LR mínimo: {args.scheduler_eta_min:.2e}")
+    print(f"  Weighted Sampler: {'✅ Ativado' if args.use_weighted_sampler else '❌ Desativado'}")
+    if args.use_weighted_sampler:
+        print(f"    - Oversampling factor: {args.oversampling_factor}x (+{int((args.oversampling_factor - 1) * 100)}% amostras/época)")
+        print(f"    - Balanceamento: classes raras aparecem mais vezes nos batches")
     print(f"  Salvar study a cada: {args.save_study_every} trials")
     print(f"  Data directory: {args.data_dir}")
     print(f"  CSV file: {args.csv_file}")
