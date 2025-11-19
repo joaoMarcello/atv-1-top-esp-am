@@ -617,7 +617,8 @@ def objective(trial, best_f1_tracker, args):
     # Controla a média móvel dos gradientes (primeiro momento)
     beta1 = trial.suggest_float('beta1', 0.8, 0.99)
     
-    batch_size = trial.suggest_categorical('batch_size', [ 32, 64])
+    # batch_size = trial.suggest_categorical('batch_size', [ 32, 64 ])
+    batch_size = 32
     stem_channels = trial.suggest_categorical('stem_channels', [ 32, 64])
     block_type = trial.suggest_categorical('block_type', [ 'residual', 'se_attention', 'self_attention'])
     stem_kernel_size = trial.suggest_categorical('stem_kernel_size', [3, 5, 7])
@@ -1219,10 +1220,29 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     for key, value in best_params.items():
         print(f"  {key}: {value}")
     
+    # Reconstruir stage_depths a partir de depth_config
+    depth_configs = {
+        'shallow':     [1, 2, 2, 1],
+        'balanced':    [2, 2, 3, 2],
+        'custom':      [3, 4, 5, 3],
+        'deep':        [2, 3, 4, 3],
+        'very_deep':   [3, 4, 6, 3],
+        'front_heavy': [3, 3, 2, 1],
+        'back_heavy':  [1, 2, 3, 3]
+    }
+    
+    # Obter depth_config dos melhores parametros
+    depth_config = best_params.get('depth_config', 'balanced')
+    stage_depths = depth_configs[depth_config]
+    
+    print(f"\nArquitetura reconstruida:")
+    print(f"  depth_config: {depth_config}")
+    print(f"  stage_depths: {stage_depths}")
+    
     # Configurar transforms
     train_transform, val_transform = get_transforms(mean=args.mean, std=args.std)
     
-    # Criar datasets
+    # Criar dataset completo
     train_dataset = EyePacsLoader(
         root_dir=args.data_dir,
         csv_file=args.csv_file,
@@ -1230,42 +1250,95 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         label_column=args.label_column
     )
     
-    # Dividir em train/val (80/20)
-    dataset_size = len(train_dataset)
-    indices = list(range(dataset_size))
-    split = int(np.floor(0.2 * dataset_size))
-    np.random.shuffle(indices)
-    train_indices, val_indices = indices[split:], indices[:split]
+    # Obter DataFrame com labels e pacientes para split estratificado
+    df_labels = pd.read_csv(args.csv_file)
+    
+    # Dividir em train/val (80/20) usando mesma estrategia do objective()
+    if args.patient_column is not None:
+        # Split estratificado por PACIENTE (evita data leakage)
+        print(f"\nDividindo dataset por PACIENTE (coluna: {args.patient_column})")
+        
+        train_indices, val_indices = split_by_patient_proportional(
+            df=df_labels,
+            test_size=0.2,
+            random_state=args.random_seed,
+            label_column=args.label_column,
+            patient_column=args.patient_column
+        )
+        
+        # Estatisticas
+        train_patients = df_labels.iloc[train_indices][args.patient_column].nunique()
+        val_patients = df_labels.iloc[val_indices][args.patient_column].nunique()
+        
+        print(f"  Treino: {train_patients} pacientes, {len(train_indices)} imagens")
+        print(f"  Val: {val_patients} pacientes, {len(val_indices)} imagens")
+        
+        # Verificar distribuicao de classes
+        train_class_dist = df_labels.iloc[train_indices][args.label_column].value_counts().sort_index()
+        val_class_dist = df_labels.iloc[val_indices][args.label_column].value_counts().sort_index()
+        print(f"  Distribuicao treino: {train_class_dist.to_dict()}")
+        print(f"  Distribuicao val: {val_class_dist.to_dict()}")
+        
+        # Verificar vazamento
+        train_patients_set = set(df_labels.iloc[train_indices][args.patient_column].unique())
+        val_patients_set = set(df_labels.iloc[val_indices][args.patient_column].unique())
+        overlap = train_patients_set & val_patients_set
+        
+        if len(overlap) > 0:
+            print(f"  ALERTA: {len(overlap)} pacientes aparecem em TREINO e VALIDACAO!")
+        else:
+            print(f"  Nenhum paciente vaza entre treino e validacao")
+    else:
+        # Split estratificado por IMAGEM (pode haver data leakage)
+        print(f"\nDividindo dataset por IMAGEM (sem considerar pacientes)")
+        print(f"  AVISO: Se houver multiplas imagens do mesmo paciente, pode haver DATA LEAKAGE!")
+        
+        from sklearn.model_selection import train_test_split
+        
+        indices = np.arange(len(df_labels))
+        all_labels = df_labels[args.label_column].values
+        
+        train_indices, val_indices = train_test_split(
+            indices,
+            test_size=0.2,
+            stratify=all_labels,
+            random_state=args.random_seed,
+            shuffle=True
+        )
+        
+        print(f"  Treino: {len(train_indices)} imagens")
+        print(f"  Val: {len(val_indices)} imagens")
     
     # Criar samplers
     if args.use_weighted_sampler:
-        # ✅ Usar método do dataset (evita código duplicado)
+        # Usar metodo do dataset para criar sampler balanceado
         train_sampler = train_dataset.create_balanced_sampler(
             indices=train_indices,
             oversampling_factor=args.oversampling_factor
         )
         
-        train_subset = Subset(train_dataset, train_indices)
-        
         num_train_samples = int(len(train_indices) * args.oversampling_factor)
-        print(f'\n✅ WeightedRandomSampler ativado no modelo final:')
+        print(f'\nWeightedRandomSampler ativado no modelo final:')
         print(f'   Oversampling factor: {args.oversampling_factor}x')
-        print(f'   Amostras por época: {num_train_samples} (original: {len(train_indices)})')
+        print(f'   Amostras por epoca: {num_train_samples} (original: {len(train_indices)})')
     else:
+        # Modo padrao: SubsetRandomSampler (sem balanceamento)
         train_sampler = SubsetRandomSampler(train_indices)
-        train_subset = Subset(train_dataset, train_indices)
     
     val_sampler = SubsetRandomSampler(val_indices)
     
     # Criar dataloaders
+    # Usar train_dataset diretamente (NAO Subset)
+    # O sampler controla quais indices usar
     train_loader = DataLoader(
-        train_subset,
-        batch_size=best_params['batch_size'],
+        train_dataset,  # Dataset completo, sampler controla os indices
+        batch_size=32,
         sampler=train_sampler,
         num_workers=args.num_workers,
         pin_memory=True
     )
     
+    # Para validacao, usar transform sem augmentation
     val_dataset = EyePacsLoader(
         root_dir=args.data_dir,
         csv_file=args.csv_file,
@@ -1273,11 +1346,9 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         label_column=args.label_column
     )
     
-    val_subset = Subset(val_dataset, val_indices)
-    
     val_loader = DataLoader(
-        val_subset,
-        batch_size=best_params['batch_size'],
+        val_dataset,  # Dataset completo, val_sampler controla os indices
+        batch_size=32,
         sampler=val_sampler,
         num_workers=args.num_workers,
         pin_memory=True
@@ -1287,8 +1358,8 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     model = AnyNet(
         num_classes=args.num_classes,
         stem_channels=best_params['stem_channels'],
-        stage_channels=[64, 128, 256, 512],
-        stage_depths=best_params['stage_depths'],
+        stage_channels=[256, 512, 1024, 2048],
+        stage_depths=stage_depths,
         groups=32,
         width_per_group=4,
         block_type=best_params['block_type'],
@@ -1298,8 +1369,8 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
     ).to(args.device)
     
     # Calcular class weights para lidar com desbalanceamento
-    class_weights = get_weights(mode=2, csv_dir=args.csv_file, label_column=args.label_column)
-    class_weights_tensor = torch.FloatTensor(class_weights).to(args.device)
+    # class_weights = get_weights(mode=2, csv_dir=args.csv_file, label_column=args.label_column)
+    class_weights_tensor = None #torch.FloatTensor(class_weights).to(args.device)
     
     # Escolher loss apropriada
     if best_params['head_type'] == "coral_head":
