@@ -282,8 +282,8 @@ def generate_trial_plots(trial_summary, rank, output_dir):
         # Ajustar layout
         plt.tight_layout()
         
-        # Salvar figura
-        filename = f"trial_{trial_summary['trial_number']}_rank_{rank}_fold_{fold_idx}.png"
+        # Salvar figura (rank primeiro para ordenação alfabética)
+        filename = f"rank_{rank:02d}_trial_{trial_summary['trial_number']:03d}_fold_{fold_idx}.png"
         filepath = os.path.join(output_dir, filename)
         plt.savefig(filepath, dpi=150, bbox_inches='tight')
         plt.close(fig)
