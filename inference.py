@@ -124,12 +124,37 @@ def create_model_from_config(config, device):
         model: Modelo AnyNet inicializado
     """
     arch = config['model_architecture']
+    hyperparams = config['hyperparameters']
+    
+    # Reconstruir stage_depths a partir de depth_config (se necessário)
+    # Isso garante consistência mesmo se depth_config for apenas uma string
+    depth_configs = {
+        'shallow':     [1, 2, 2, 1],
+        'balanced':    [2, 2, 3, 2],
+        'custom':      [3, 4, 5, 3],
+        'deep':        [2, 3, 4, 3],
+        'very_deep':   [3, 4, 6, 3],
+        'front_heavy': [3, 3, 2, 1],
+        'back_heavy':  [1, 2, 3, 3]
+    }
+    
+    # Obter depth_config correto
+    depth_config = arch.get('depth_config') or hyperparams.get('depth_config', 'balanced')
+    stage_depths = depth_configs.get(depth_config, arch.get('stage_depths', [2, 2, 3, 2]))
+    
+    # Obter stage_channels do JSON (agora corrigido para ter os valores reais)
+    stage_channels = arch.get('stage_channels', [256, 512, 1024, 2048])
+    
+    print(f"Reconstruindo arquitetura a partir de depth_config: {depth_config}")
+    print(f"  stage_depths: {stage_depths}")
+    print(f"  groups: {arch['groups']}, width_per_group: {arch['width_per_group']}")
+    print(f"  stage_channels: {stage_channels}")
     
     model = AnyNet(
         num_classes=arch['num_classes'],
         stem_channels=arch['stem_channels'],
-        stage_channels=arch['stage_channels'],
-        stage_depths=arch['stage_depths'],
+        stage_channels=stage_channels,  # Usar valores corretos do treinamento
+        stage_depths=stage_depths,  # Usar stage_depths reconstruído
         groups=arch['groups'],
         width_per_group=arch['width_per_group'],
         block_type=arch['block_type'],
@@ -142,11 +167,13 @@ def create_model_from_config(config, device):
     
     model = model.to(device)
     
-    print(f"Modelo criado: {arch['head_type']}")
-    print(f"  - Blocos: {arch['stage_depths']} (total: {sum(arch['stage_depths'])})")
+    print(f"\nModelo criado: {arch['head_type']}")
+    print(f"  - Blocos: {stage_depths} (total: {sum(stage_depths)})")
     print(f"  - Block type: {arch['block_type']}")
     print(f"  - Head dropout: {arch.get('head_dropout', 0.0):.3f}")
     print(f"  - Stem kernel: {arch['stem_kernel_size']}")
+    print(f"  - Groups: {arch['groups']}, Width per group: {arch['width_per_group']}")
+    print(f"  - Stage channels: {stage_channels}")
     print()
     
     return model

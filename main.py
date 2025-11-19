@@ -1153,7 +1153,7 @@ def objective(trial, best_f1_tracker, args):
                 'model_architecture': {
                     'num_classes': args.num_classes,
                     'stem_channels': stem_channels,
-                    'stage_channels': [64, 128, 256, 512],
+                    'stage_channels': [256, 512, 1024, 2048],  # Valores corretos usados no treinamento
                     'stage_depths': stage_depths,
                     'depth_config': depth_config,
                     'groups': 32,
@@ -1406,7 +1406,7 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         print(f"    - Cosine: {args.n_epochs - args.scheduler_warmup_epochs} épocas (lr: {best_params['lr']:.2e} → {args.scheduler_eta_min:.2e})")
     
     # Treinar modelo
-    early_stopping = EarlyStopping(patience=args.patience, verbose=True, min_epochs=args.min_epochs, delta=0.001, mode='max')
+    early_stopping = EarlyStopping(patience=args.patience, verbose=False, min_epochs=args.min_epochs, delta=0.001, mode='max')
     best_val_f1 = 0.0
     best_metrics = None
     best_epoch = 0
@@ -1482,10 +1482,16 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
         
         # Salvar melhor modelo baseado em F1-score
         if val_metrics['f1_score'] > best_val_f1:
+            # Armazenar valor anterior ANTES de atualizar
+            previous_best_f1 = best_val_f1
+            
+            # Atualizar melhor F1
             best_val_f1 = val_metrics['f1_score']
             best_metrics = val_metrics.copy()
             best_epoch = epoch + 1
             final_history['best_epoch'] = best_epoch
+            
+            # Salvar checkpoint
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -1494,7 +1500,14 @@ def train_final_model(best_params, args, save_path='best_model.pth'):
                 'train_metrics': train_metrics,
                 'hyperparameters': best_params
             }, save_path)
+            
+            # Mostrar mensagem com valores corretos
             print(f'>>> Modelo salvo em {save_path} (F1: {best_val_f1:.4f})')
+            if previous_best_f1 > 0.0:
+                improvement = best_val_f1 - previous_best_f1
+                print(f'    Metrica melhorou! aumentou {improvement:.6f} (de {previous_best_f1:.6f} para {best_val_f1:.6f})')
+            else:
+                print(f'    Metrica inicial: {best_val_f1:.6f}')
         
         # Early stopping baseado em F1-score
         early_stopping(val_metrics['f1_score'])
