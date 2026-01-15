@@ -1,0 +1,42 @@
+OTIMIZAÇÃO DE HIPERPARÂMETROS - RESULTADOS
+================================================================================
+
+Melhor trial: 19
+Melhor F1-score: 0.7398
+
+Melhores hiperparâmetros:
+  head_type: normal_head
+  head_dropout: 0.26354537380148824
+  lr: 0.00012608943924776687
+  weight_decay: 2.0516355254837068e-05
+  beta1: 0.8945848413009092
+  stem_channels: 32
+  block_type: self_attention
+  stem_kernel_size: 3
+  depth_config: front_heavy
+
+================================================================================
+
+Top 5 Trials:
+
+1. Trial 19 - F1-score: 0.7398
+   head_type: normal_head
+   head_dropout: 0.26354537380148824
+   lr: 0.00012608943924776687
+   weight_decay: 2.0516355254837068e-05
+   beta1: 0.8945848413009092
+   stem_channels: 32
+   block_type: self_attention
+   stem_kernel_size: 3
+   depth_config: front_heavy
+
+================================================================================
+
+ESTATÍSTICAS DE PRUNING
+================================================================================
+
+Total de trials: 100
+  - Completados: 100
+  - Pruned: 0
+  - Taxa de pruning: 0.0%
+

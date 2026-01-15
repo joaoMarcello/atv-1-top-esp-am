@@ -1,0 +1,153 @@
+{
+  "trial_number": 0,
+  "avg_f1_score": 0.6920460879700011,
+  "hyperparameters": {
+    "lr": 2.7550824453414622e-05,
+    "weight_decay": 1.2110694861947135e-05,
+    "beta1": 0.9405697881397931,
+    "batch_size": 32,
+    "stem_channels": 64,
+    "block_type": "self_attention",
+    "head_type": "normal_head",
+    "head_dropout": 0.4999336463119396,
+    "depth_config": "deep",
+    "stage_depths": [
+      2,
+      3,
+      4,
+      3
+    ],
+    "stem_kernel_size": 3
+  },
+  "fold_results": [
+    {
+      "fold": 1,
+      "best_epoch": 34,
+      "train_metrics": {
+        "sensitivity": 0.579935376028451,
+        "specificity": 0.7713384139255886,
+        "f1_score": 0.5538675854858813,
+        "kappa": 0.30811865386265025,
+        "accuracy": 0.5712596096984033,
+        "iou": 0.3872166609407657,
+        "confusion_matrix": [
+          [
+            146,
+            60,
+            21
+          ],
+          [
+            124,
+            292,
+            201
+          ],
+          [
+            59,
+            260,
+            528
+          ]
+        ],
+        "sensitivities_per_class": [
+          0.6431718061674009,
+          0.473257698541329,
+          0.6233766233766234
+        ],
+        "specificities_per_class": [
+          0.875,
+          0.702048417132216,
+          0.7369668246445498
+        ],
+        "f1_per_class": [
+          0.5251798561151079,
+          0.4751830756712775,
+          0.6612398246712586
+        ],
+        "kappa_per_class": [
+          0.4354994120101665,
+          0.17560888595958823,
+          0.3602701207739434
+        ],
+        "iou_per_class": [
+          0.35609756097560974,
+          0.31163287086446106,
+          0.4939195509822264
+        ],
+        "loss": 9.644142375802094
+      },
+      "val_metrics": {
+        "sensitivity": 0.6893009565857248,
+        "specificity": 0.8374149266392891,
+        "f1_score": 0.6920460879700011,
+        "kappa": 0.5207651102773742,
+        "accuracy": 0.6955380577427821,
+        "iou": 0.5323661295525984,
+        "confusion_matrix": [
+          [
+            49,
+            26,
+            0
+          ],
+          [
+            16,
+            93,
+            46
+          ],
+          [
+            3,
+            25,
+            123
+          ]
+        ],
+        "sensitivities_per_class": [
+          0.6533333333333333,
+          0.6,
+          0.8145695364238411
+        ],
+        "specificities_per_class": [
+          0.9379084967320261,
+          0.7743362831858407,
+          0.8
+        ],
+        "f1_per_class": [
+          0.6853146853146853,
+          0.6220735785953178,
+          0.76875
+        ],
+        "kappa_per_class": [
+          0.612831109003455,
+          0.3785562724635171,
+          0.6022403431054428
+        ],
+        "iou_per_class": [
+          0.5212765957446809,
+          0.45145631067961167,
+          0.6243654822335025
+        ],
+        "loss": 2.8974022467931113
+      }
+    }
+  ],
+  "model_architecture": {
+    "num_classes": 3,
+    "stem_channels": 64,
+    "stage_channels": [
+      64,
+      128,
+      256,
+      512
+    ],
+    "stage_depths": [
+      2,
+      3,
+      4,
+      3
+    ],
+    "depth_config": "deep",
+    "groups": 32,
+    "width_per_group": 4,
+    "block_type": "self_attention",
+    "head_type": "normal_head",
+    "head_dropout": 0.4999336463119396,
+    "stem_kernel_size": 3
+  }
+}
